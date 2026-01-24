@@ -132,11 +132,22 @@ k.gotoさんにより、CDK hotswapがAgentCore Runtimeに対応した。
 | 項目 | 状態 | 備考 |
 |------|------|------|
 | package.json overrides追加 | ✅完了 | toolkit-lib 1.14.0 |
-| Amplify Console設定 | ⬜未着手 | カスタムビルドイメージ設定 |
-| GitHubリポジトリ連携 | ⬜未着手 | mainブランチ連携 |
-| 環境変数設定 | ⬜未着手 | TAVILY_API_KEY等 |
-| 本番デプロイ実行 | ⬜未着手 | |
+| Amplify Console設定 | 🔄進行中 | カスタムビルドイメージ設定が必要 |
+| GitHubリポジトリ連携 | ✅完了 | mainブランチ連携済み |
+| 環境変数設定 | ✅完了 | TAVILY_API_KEY設定済み |
+| サービスロール作成 | 🔄進行中 | AmplifyServiceRole-marp-agent作成済み、ポリシーアタッチが必要 |
+| 本番デプロイ実行 | ⬜未着手 | サービスロール設定後に再実行 |
 | 本番動作確認 | ⬜未着手 | E2Eテスト |
+
+### 本番デプロイで発生した問題
+
+1. **CDKAssetPublishError**: サービスロール権限不足
+   - デフォルトの`AmplifySSRLoggingRole`はロギング専用で権限不足
+   - `AmplifyServiceRole-marp-agent`を新規作成
+   - `AdministratorAccess-Amplify`ポリシーのアタッチが必要
+
+2. **カスタムビルドイメージ**: Docker対応が必要
+   - イメージ: `public.ecr.aws/codebuild/amazonlinux-x86_64-standard:5.0`
 
 ### Step 5 詳細進捗
 
