@@ -199,10 +199,15 @@ marp-agent/
 
 | ツール名 | 機能 | 入力 | 出力 |
 |---------|------|------|------|
+| `web_search` | Tavily APIでWeb検索 | query, max_results | 検索結果テキスト |
 | `generate_slide` | 新規スライド生成 | プロンプト | Marp Markdown |
 | `edit_slide` | スライド編集 | 編集指示, 現在のMarkdown | 更新後Markdown |
 | `preview_slide` | HTMLプレビュー生成 | Markdown | HTML文字列 |
 | `export_pdf` | PDF出力 | Markdown | S3 URL (PDF) |
+
+**備考**:
+- Web検索はTavily APIを使用
+- `TAVILY_API_KEY` は AgentCore Runtime の環境変数として設定（CDK で定義）
 
 ## 実装ステップ
 

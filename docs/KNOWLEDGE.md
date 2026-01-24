@@ -404,22 +404,31 @@ setMessages(prev =>
 
 ---
 
-## API接続実装（TODO）
+## API接続実装（進行中）
 
 ### 概要
 フロントエンド（React）からAgentCoreエンドポイントを呼び出す。
 
-### 開発フロー
+### 現在の進捗（2026/1/24）
 
-#### Phase 1: sandbox起動
-1. `amplify/backend.ts` に `addOutput()` を追加
-2. `npx ampx sandbox` を実行
-3. `amplify_outputs.json` が生成されることを確認
+#### Phase 1: sandbox起動 ✅ 完了
+- `amplify/backend.ts` に `addOutput()` を追加済み
+- `npx ampx sandbox` 実行済み
+- CloudFormationスタック: `CREATE_COMPLETE`
 
-#### Phase 2: API接続実装
+#### デプロイ済みリソース
+- **Runtime ARN**: `arn:aws:bedrock-agentcore:us-east-1:715841358122:runtime/marp_agent-gH3nxo4W5e`
+- **Endpoint ARN**: `arn:aws:bedrock-agentcore:us-east-1:715841358122:runtime/marp_agent-gH3nxo4W5e/runtime-endpoint/marp_agent_endpoint`
+- **Cognito User Pool**: `us-east-1_Q60t5VTsR`
+- **Cognito Client**: `62ukd1440lttuvdphna9e0q46t`
+- **Identity Pool**: `us-east-1:8fbfe5af-bf53-4d0d-86d4-df5380a7b5e7`
+
+#### Phase 2: API接続実装（次のステップ）
 1. `src/main.tsx` にAmplify初期化を追加
 2. `src/hooks/useAgentCore.ts` を新規作成
 3. `src/components/Chat.tsx` を修正
+
+### 開発フロー
 
 ### 対象ファイル
 
