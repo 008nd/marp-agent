@@ -1,10 +1,40 @@
 import subprocess
 import tempfile
 import base64
+import os
 from pathlib import Path
 
 from bedrock_agentcore import BedrockAgentCoreApp
-from strands import Agent
+from strands import Agent, tool
+from tavily import TavilyClient
+
+# Tavily クライアント初期化（APIキーがある場合のみ）
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
+
+
+@tool
+def web_search(query: str) -> str:
+    """Web検索を実行して最新情報を取得します。スライド作成に必要な情報を調べる際に使用してください。
+
+    Args:
+        query: 検索クエリ（日本語または英語）
+
+    Returns:
+        検索結果のテキスト
+    """
+    if not tavily_client:
+        return "Web検索機能は現在利用できません（APIキー未設定）"
+
+    try:
+        context = tavily_client.get_search_context(
+            query=query,
+            max_results=5,
+            search_depth="advanced",
+        )
+        return context
+    except Exception as e:
+        return f"検索エラー: {str(e)}"
 
 SYSTEM_PROMPT = """あなたは「パワポ作るマン」、プロフェッショナルなスライド作成AIアシスタントです。
 
@@ -26,8 +56,12 @@ SYSTEM_PROMPT = """あなたは「パワポ作るマン」、プロフェッシ�
 - スライド区切りは `---` を使用
 - 1枚目はタイトルスライド（タイトル + サブタイトル）
 - 箇条書きは1スライドあたり3〜5項目に抑える
-- 適度に絵文字を使って視覚的に分かりやすく
+- 絵文字は使用しない（シンプルでビジネスライクに）
 - 情報は簡潔に、キーワード中心で
+
+## Web検索
+最新の情報が必要な場合は、web_searchツールを使って調べてからスライドを作成してください。
+ユーザーが「〇〇について調べて」「最新の〇〇」などと言った場合は積極的に検索を活用します。
 
 ## 出力形式
 スライドを生成・編集したら、マークダウン全文を ```markdown コードブロックで出力してください。
@@ -38,6 +72,7 @@ app = BedrockAgentCoreApp()
 agent = Agent(
     model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     system_prompt=SYSTEM_PROMPT,
+    tools=[web_search],
 )
 
 

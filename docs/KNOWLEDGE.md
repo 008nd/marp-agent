@@ -115,6 +115,22 @@ async for event in agent.stream_async(prompt):
 - `current_tool_use`: ツール使用情報
 - `result`: 最終結果
 
+### SSEレスポンス形式（AgentCore経由）
+
+AgentCore Runtime経由でストリーミングする場合、以下の形式でイベントが返される：
+
+```
+data: {"type": "text", "data": "テキストチャンク"}
+data: {"type": "error", "error": "エラーメッセージ"}
+data: [DONE]
+```
+
+**注意**: イベントのペイロードは `content` または `data` フィールドに格納される。両方に対応するコードが必要：
+
+```typescript
+const textValue = event.content || event.data;
+```
+
 ---
 
 ## AgentCore Runtime CDK（TypeScript）
@@ -175,9 +191,14 @@ runtime.addToRolePolicy(new iam.PolicyStatement({
     'bedrock:InvokeModel',
     'bedrock:InvokeModelWithResponseStream',
   ],
-  resources: ['arn:aws:bedrock:*::foundation-model/*'],  // 全モデル
+  resources: [
+    'arn:aws:bedrock:*::foundation-model/*',      // 基盤モデル
+    'arn:aws:bedrock:*:*:inference-profile/*',    // 推論プロファイル（クロスリージョン推論）
+  ],
 }));
 ```
+
+**重要**: クロスリージョン推論（`us.anthropic.claude-*`形式のモデルID）を使用する場合、`inference-profile/*` リソースへの権限も必要。`foundation-model/*` だけでは `AccessDeniedException` が発生する。
 
 ### Amplify Gen2との統合
 ```typescript
@@ -404,61 +425,116 @@ setMessages(prev =>
 
 ---
 
-## API接続実装（進行中）
+## API接続実装 ✅ 完了
 
 ### 概要
 フロントエンド（React）からAgentCoreエンドポイントを呼び出す。
 
-### 現在の進捗（2026/1/24）
+### 実装状況（2026/1/24）
 
 #### Phase 1: sandbox起動 ✅ 完了
 - `amplify/backend.ts` に `addOutput()` を追加済み
 - `npx ampx sandbox` 実行済み
-- CloudFormationスタック: `CREATE_COMPLETE`
+- CloudFormationスタック: `UPDATE_COMPLETE`
 
-#### デプロイ済みリソース
-- **Runtime ARN**: `arn:aws:bedrock-agentcore:us-east-1:715841358122:runtime/marp_agent-gH3nxo4W5e`
-- **Endpoint ARN**: `arn:aws:bedrock-agentcore:us-east-1:715841358122:runtime/marp_agent-gH3nxo4W5e/runtime-endpoint/marp_agent_endpoint`
+#### Phase 2: API接続実装 ✅ 完了
+- `src/main.tsx` にAmplify初期化を追加
+- `src/hooks/useAgentCore.ts` を新規作成
+- `src/components/Chat.tsx` を修正
+
+#### Phase 3: 環境分岐 ✅ 完了
+- `AWS_BRANCH` 環境変数で sandbox/本番を判定
+- リソース名にサフィックス追加（例: `marp_agent_dev`）
+- `amplify_outputs.json` に `environment` フィールド追加
+
+#### デプロイ済みリソース（sandbox環境）
+- **Runtime名**: `marp_agent_dev`（sandbox）/ `marp_agent_main`（本番予定）
 - **Cognito User Pool**: `us-east-1_Q60t5VTsR`
 - **Cognito Client**: `62ukd1440lttuvdphna9e0q46t`
 - **Identity Pool**: `us-east-1:8fbfe5af-bf53-4d0d-86d4-df5380a7b5e7`
-
-#### Phase 2: API接続実装（次のステップ）
-1. `src/main.tsx` にAmplify初期化を追加
-2. `src/hooks/useAgentCore.ts` を新規作成
-3. `src/components/Chat.tsx` を修正
-
-### 開発フロー
 
 ### 対象ファイル
 
 | ファイル | 変更内容 |
 |---------|---------|
-| `amplify/backend.ts` | `addOutput()` でエンドポイント情報追加 |
+| `amplify/backend.ts` | 環境判定 + `addOutput()` でエンドポイント情報追加 |
+| `amplify/agent/resource.ts` | `nameSuffix` パラメータ追加 |
 | `src/main.tsx` | Amplify初期化 |
 | `src/hooks/useAgentCore.ts` | 新規作成（API呼び出しフック） |
 | `src/components/Chat.tsx` | 実際のAPI呼び出しに置き換え |
 
+#### Phase 4: 認証UI ✅ 完了
+- `@aws-amplify/ui-react` をインストール
+- `App.tsx` に `Authenticator` コンポーネントを追加
+- ログアウトボタンを機能させる
+
 ### AgentCore呼び出しAPI仕様
 
+#### エンドポイントURL形式（重要）
+
 ```
-POST https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{arn}/invocations
+POST https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{URLエンコードされたARN}/invocations?qualifier={endpointName}
 ```
 
-ヘッダー:
+**注意**: ARNは `encodeURIComponent()` で完全にURLエンコードする必要がある。
+
+```typescript
+// 正しい例
+const runtimeArn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/my_agent";
+const encodedArn = encodeURIComponent(runtimeArn);
+const url = `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodedArn}/invocations?qualifier=${endpointName}`;
+
+// 結果: /runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A123456789012%3Aruntime%2Fmy_agent/invocations?qualifier=my_endpoint
 ```
-Authorization: Bearer {cognitoToken}
+
+#### 過去に試したNG例
+| URL形式 | エラー |
+|---------|--------|
+| `/runtimes/{runtimeId}/invoke` | 404 |
+| `/runtimes/{runtimeId}/invocations` | 400 (accountID required) |
+| `/accounts/{accountId}/runtimes/{runtimeId}/invocations` | 404 (UnknownOperation) |
+| `/runtimes/{encodedArn}/invocations` （ARNエンコードなし） | 404 |
+
+#### ヘッダー
+```
+Authorization: Bearer {cognitoIdToken}
 Content-Type: application/json
 Accept: text/event-stream
 ```
 
-リクエストボディ:
+#### リクエストボディ
 ```json
 {
   "prompt": "ユーザーの入力",
   "markdown": "現在のスライド（編集時）"
 }
 ```
+
+#### 認証問題の解決 ✅
+
+**現象**: Cognito認証で `Claim 'client_id' value mismatch with configuration.` エラーが発生
+
+**根本原因**: IDトークンとアクセストークンのクレーム構造の違い
+
+| トークン種別 | クライアントIDの格納先 |
+|-------------|---------------------|
+| IDトークン | `aud` クレーム |
+| アクセストークン | `client_id` クレーム |
+
+AgentCore RuntimeのJWT認証（`usingJWT`の`allowedClients`）は **`client_id`クレーム** を検証するため、**アクセストークン** を使用する必要がある。
+
+**解決策**:
+```typescript
+// useAgentCore.ts
+// NG: IDトークン
+const idToken = session.tokens?.idToken?.toString();
+
+// OK: アクセストークン
+const accessToken = session.tokens?.accessToken?.toString();
+```
+
+**参考**: AWS公式ドキュメント
+> Amazon Cognito renders the same value in the access token `client_id` claim as the ID token `aud` claim.
 
 ### Amplify Gen2 でカスタム出力を追加
 

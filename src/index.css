@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Amplify Authenticatorを上下中央揃え */
+[data-amplify-authenticator] {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 @theme {
   --color-kag-blue: #0e0d6a;
   --color-kag-blue-light: #1a1994;

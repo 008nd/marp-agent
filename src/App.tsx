@@ -1,10 +1,20 @@
 import { useState } from 'react';
+import { Authenticator } from '@aws-amplify/ui-react';
+import '@aws-amplify/ui-react/styles.css';
 import { Chat } from './components/Chat';
 import { SlidePreview } from './components/SlidePreview';
 
 type Tab = 'chat' | 'preview';
 
 function App() {
+  return (
+    <Authenticator>
+      {({ signOut }) => <MainApp signOut={signOut} />}
+    </Authenticator>
+  );
+}
+
+function MainApp({ signOut }: { signOut?: () => void }) {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [markdown, setMarkdown] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
@@ -49,7 +59,7 @@ function App() {
         <div className="flex justify-between items-center">
           <h1 className="text-xl font-bold">パワポ作るマン</h1>
           <button
-              onClick={() => {/* TODO: ログアウト処理 */}}
+              onClick={signOut}
               className="bg-white/20 text-white px-4 py-1 rounded hover:bg-white/30 transition-colors text-sm"
             >
               ログアウト

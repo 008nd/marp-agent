@@ -8,11 +8,11 @@
 | UI | ライブラリ | Tailwind CSS |
 | UI | プレビュー | 全スライド一覧（サムネイル） |
 | UI | 編集機能 | なし（MVP。チャットで修正指示のみ） |
-| スライド | テーマ | gaia（モダン） |
+| スライド | テーマ | default + invert（ダーク） |
 | スライド | アスペクト比 | 16:9（ワイド） |
 | スライド | 出力形式 | PDFのみ（MVP） |
 | エージェント | 性格 | プロフェッショナル |
-| エージェント | ツール | Web検索（Tavily API） |
+| エージェント | ツール | なし（Phase 2でWeb検索追加予定） |
 | インフラ | リージョン | us-east-1（バージニア） |
 | インフラ | モデル | Claude Sonnet 4.5 |
 | 認証 | スコープ | 誰でもサインアップ可能（本番時） |
@@ -83,7 +83,8 @@
 ```yaml
 ---
 marp: true
-theme: gaia
+theme: default
+class: invert
 size: 16:9
 paginate: true
 ---
@@ -102,9 +103,7 @@ paginate: true
 
 ### ツール
 
-| ツール名 | 説明 | 入力 | 出力 |
-|---------|------|------|------|
-| `web_search` | Tavily APIでWeb検索 | query, max_results | 検索結果テキスト |
+現在のMVPではツールなし。Phase 2でWeb検索（Tavily API）を追加予定。
 
 ### システムプロンプト
 
@@ -115,15 +114,13 @@ paginate: true
 ユーザーの指示に基づいて、Marp形式のマークダウンでスライドを作成・編集します。
 デザインや構成についてのアドバイスも積極的に行います。
 
-## 利用可能なツール
-- **web_search**: 最新情報が必要な場合にWeb検索を実行できます。技術トピックや最新ニュースなど、正確な情報が求められる場合に活用してください。
-
 ## スライド作成ルール
 - フロントマターには以下を含める：
   ```yaml
   ---
   marp: true
-  theme: gaia
+  theme: default
+  class: invert
   size: 16:9
   paginate: true
   ---
@@ -204,56 +201,71 @@ RUN apt-get install -y chromium
 
 ## 5. 認証仕様
 
-### 分岐ロジック
+### 実装方針（更新）
 
 ```typescript
-const isProduction = import.meta.env.PROD;
+// モック使用フラグ（VITE_USE_MOCK=true で強制的にモック使用）
+const useMock = import.meta.env.VITE_USE_MOCK === 'true';
 
-if (isProduction) {
-  // Cognito認証必須
-  // Amplify Auth を使用
-} else {
-  // ローカル開発：認証スキップ
-  // 直接AgentCoreエンドポイントを呼び出し
-}
+// デフォルトは本番API、VITE_USE_MOCK=trueでモック使用
+const invoke = useMock ? invokeAgentMock : invokeAgent;
 ```
 
-### 本番環境
+### 認証フロー
+
+1. Amplify Authenticatorコンポーネントでログイン画面を表示
+2. Cognitoでユーザー認証
+3. IDトークンを取得してAgentCore APIにBearer認証で送信
+
+### Cognito設定
 
 - Cognito User Pool で認証
 - 誰でもサインアップ可能
 - メール確認必須
+- AgentCore RuntimeのauthorizerConfigurationでCognito統合
 
 ---
 
 ## 6. API仕様
 
-### エージェント呼び出し（SSE）
+### AgentCore Runtime呼び出し
 
-**リクエスト**
+**エンドポイント形式**
 ```
-POST /invoke
-Content-Type: application/json
+POST https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{URLエンコードARN}/invocations?qualifier={endpointName}
+```
 
+**URL構築例**
+```typescript
+const runtimeArn = outputs.custom?.agentRuntimeArn;
+const encodedArn = encodeURIComponent(runtimeArn);
+const url = `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodedArn}/invocations?qualifier=${endpointName}`;
+```
+
+**リクエストヘッダー**
+```
+Authorization: Bearer {cognitoIdToken}
+Content-Type: application/json
+Accept: text/event-stream
+```
+
+**リクエストボディ**
+```json
 {
   "prompt": "AWS入門の5枚スライドを作って",
-  "session_id": "xxx" (optional)
+  "markdown": "現在のスライド（編集時）"
 }
 ```
 
 **レスポンス（SSE）**
 ```
-event: message
 data: {"type": "text", "content": "AWS入門の..."}
 
-event: message
 data: {"type": "status", "content": "スライドを生成しています..."}
 
-event: message
 data: {"type": "markdown", "content": "---\nmarp: true\n..."}
 
-event: done
-data: {}
+data: [DONE]
 ```
 
 ---
@@ -307,6 +319,7 @@ data: {}
 
 ## 8. 今後の拡張（Phase 2）
 
+- [ ] Web検索機能（Tavily API統合）
 - [ ] マークダウン編集機能（シンタックスハイライト付き）
 - [ ] テーマ選択（default / gaia / uncover）
 - [ ] 画像アップロード・挿入

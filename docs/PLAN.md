@@ -114,17 +114,56 @@ k.gotoさんにより、CDK hotswapがAgentCore Runtimeに対応した。
 | Step 1 | ✅完了 | プロジェクト初期化（Amplify Gen2 + Vite + Tailwind） |
 | Step 2 | ✅完了 | エージェント実装（Strands Agent + Marp CLI） |
 | Step 3 | ✅完了 | インフラ構築（AgentCore Runtime CDK） |
-| Step 4 | 🔄進行中 | フロントエンド実装（UI完了、テスト作成中） |
-| Step 5 | ⏳未着手 | 統合・テスト |
+| Step 4 | ✅完了 | フロントエンド実装（チャットUI、プレビュー、SSE対応） |
+| Step 5 | 🔄進行中 | 統合・テスト |
+
+### Step 5 詳細進捗
+
+| 項目 | 状態 | 備考 |
+|------|------|------|
+| Amplify初期化（main.tsx） | ✅完了 | |
+| useAgentCoreフック作成 | ✅完了 | ARN URLエンコード対応済み |
+| Chat.tsx API接続 | ✅完了 | VITE_USE_MOCK環境変数で切り替え |
+| 環境分岐実装 | ✅完了 | AWS_BRANCHで判定、nameSuffix追加 |
+| 認証UI追加 | ✅完了 | Authenticator + 日本語化 |
+| 本番API接続 | ✅完了 | Cognito認証 + AgentCore SSE動作確認済み |
+
+### 解決済み: 認証問題
+
+**エラー**: `Claim 'client_id' value mismatch with configuration.`
+
+**原因**: IDトークンではなくアクセストークンを使用する必要があった
+- IDトークン: `aud` クレームにクライアントID
+- アクセストークン: `client_id` クレームにクライアントID
+- AgentCoreの `usingJWT(allowedClients)` は `client_id` クレームを検証
+
+**解決策**: `useAgentCore.ts` でアクセストークンを使用
+```typescript
+const accessToken = session.tokens?.accessToken?.toString();
+```
+
+### 解決済み: Bedrockモデル権限
+
+**エラー**: `AccessDeniedException: bedrock:InvokeModelWithResponseStream on inference-profile`
+
+**原因**: クロスリージョン推論プロファイルへの権限が不足
+
+**解決策**: `amplify/agent/resource.ts` で権限追加
+```typescript
+resources: [
+  'arn:aws:bedrock:*::foundation-model/*',
+  'arn:aws:bedrock:*:*:inference-profile/*',  // 追加
+]
+```
 
 ## 機能一覧
 
 ### MVP（Phase 1）
-- [ ] ユーザー認証（Cognito）← 本番のみ
-- [ ] チャットUI（指示入力）
-- [x] スライド生成（Marp Markdown）← エージェント実装済み
-- [ ] リアルタイムプレビュー
-- [x] PDFダウンロード ← エージェント実装済み
+- [x] ユーザー認証（Cognito）← 設定済み、本番のみ有効
+- [x] チャットUI（指示入力）
+- [x] スライド生成（Marp Markdown）
+- [x] リアルタイムプレビュー（Marp Core使用）
+- [ ] PDFダウンロード ← エージェント側は実装済み、フロント連携未完
 
 ### 追加機能（Phase 2）
 - [ ] スライド編集（マークダウンエディタ）
@@ -166,13 +205,14 @@ marp-agent/
 ├── tests/
 │   └── test_agent.py            # エージェント単体テスト ✅
 ├── src/
-│   ├── App.tsx                  # メインアプリ ✅
+│   ├── App.tsx                  # メインアプリ + Authenticator ✅
 │   ├── components/
 │   │   ├── Chat.tsx             # チャットUI ✅
 │   │   └── SlidePreview.tsx     # スライドプレビュー ✅
-│   ├── hooks/                   # カスタムフック（今後追加）
+│   ├── hooks/
+│   │   └── useAgentCore.ts      # AgentCore API呼び出しフック ✅
 │   ├── index.css                # Tailwind + カスタムカラー ✅
-│   └── main.tsx
+│   └── main.tsx                 # Amplify初期化 + I18n ✅
 ├── index.html                   # HTMLテンプレート ✅
 ├── vite.config.ts               # Vite + Tailwind設定 ✅
 ├── package.json
@@ -195,19 +235,17 @@ marp-agent/
 - marp: true をフロントマターに含める
 ```
 
-### ツール定義
+### エージェント機能
 
-| ツール名 | 機能 | 入力 | 出力 |
-|---------|------|------|------|
-| `web_search` | Tavily APIでWeb検索 | query, max_results | 検索結果テキスト |
-| `generate_slide` | 新規スライド生成 | プロンプト | Marp Markdown |
-| `edit_slide` | スライド編集 | 編集指示, 現在のMarkdown | 更新後Markdown |
-| `preview_slide` | HTMLプレビュー生成 | Markdown | HTML文字列 |
-| `export_pdf` | PDF出力 | Markdown | S3 URL (PDF) |
+| 機能 | 説明 | 状態 |
+|------|------|------|
+| スライド生成・編集 | LLMによるMarp Markdown生成 | ✅ 実装済み |
+| PDF出力 | Marp CLIでPDF変換 | ✅ 実装済み（エージェント側） |
+| Web検索 | Tavily APIで最新情報取得 | ⏳ Phase 2で実装予定 |
 
 **備考**:
-- Web検索はTavily APIを使用
-- `TAVILY_API_KEY` は AgentCore Runtime の環境変数として設定（CDK で定義）
+- プレビューはフロントエンド側で@marp-team/marp-coreを使用して描画
+- PDF生成はエージェント側の`action: "export_pdf"`で実行可能
 
 ## 実装ステップ
 
@@ -243,7 +281,7 @@ marp-agent/
 |------|------|
 | 認証 | ローカル開発時はなし、本番のみCognito認証 |
 | 保存 | MVPではセッション限り（フロントエンドstate） |
-| テーマ | gaiaテーマ固定 |
+| テーマ | defaultテーマ + invert（ダーク） |
 | 共同編集 | 不要 |
 | UIレイアウト | タブ切り替え（チャット / プレビュー） |
 | モデル | Claude Sonnet 4.5 |

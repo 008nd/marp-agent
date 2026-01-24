@@ -13,33 +13,53 @@ interface MarpAgentProps {
   stack: cdk.Stack;
   userPool?: IUserPool;
   userPoolClient?: IUserPoolClient;
+  nameSuffix?: string;
 }
 
-export function createMarpAgent({ stack, userPool, userPoolClient }: MarpAgentProps) {
+export function createMarpAgent({ stack, userPool, userPoolClient, nameSuffix }: MarpAgentProps) {
   // ローカルDockerイメージからビルド（ARM64）
   const agentRuntimeArtifact = agentcore.AgentRuntimeArtifact.fromAsset(
     path.join(__dirname, 'runtime')
   );
 
-  // 認証設定（本番のみCognito、ローカルはIAM）
-  const authConfig = userPool && userPoolClient
-    ? agentcore.RuntimeAuthorizerConfiguration.usingCognito(userPool, [userPoolClient])
+  // 認証設定（JWT認証）
+  // usingCognito()はclient_id/audienceの両方を検証するため、
+  // より細かく制御できるusingJWT()を使用
+  const discoveryUrl = userPool
+    ? `https://cognito-idp.${stack.region}.amazonaws.com/${userPool.userPoolId}/.well-known/openid-configuration`
     : undefined;
+
+  const authConfig = discoveryUrl && userPoolClient
+    ? agentcore.RuntimeAuthorizerConfiguration.usingJWT(
+        discoveryUrl,
+        [userPoolClient.userPoolClientId], // allowedClients
+        // allowedAudience は省略（Resource Server未使用のため）
+      )
+    : undefined;
+
+  // 環境ごとのランタイム名（例: marp_agent_dev, marp_agent_main）
+  const runtimeName = nameSuffix ? `marp_agent_${nameSuffix}` : 'marp_agent';
 
   // AgentCore Runtime作成
   const runtime = new agentcore.Runtime(stack, 'MarpAgentRuntime', {
-    runtimeName: 'marp_agent',
+    runtimeName,
     agentRuntimeArtifact,
     authorizerConfiguration: authConfig,
+    environmentVariables: {
+      TAVILY_API_KEY: process.env.TAVILY_API_KEY || '',
+    },
   });
 
-  // Bedrockモデル呼び出し権限を付与（全モデル）
+  // Bedrockモデル呼び出し権限を付与（全モデル + 推論プロファイル）
   runtime.addToRolePolicy(new iam.PolicyStatement({
     actions: [
       'bedrock:InvokeModel',
       'bedrock:InvokeModelWithResponseStream',
     ],
-    resources: ['arn:aws:bedrock:*::foundation-model/*'],
+    resources: [
+      'arn:aws:bedrock:*::foundation-model/*',
+      'arn:aws:bedrock:*:*:inference-profile/*',
+    ],
   }));
 
   // エンドポイント作成

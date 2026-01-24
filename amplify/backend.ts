@@ -1,6 +1,13 @@
+import 'dotenv/config';
 import { defineBackend } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
 import { createMarpAgent } from './agent/resource';
+
+// 環境判定
+// - Sandbox: AWS_BRANCHが未定義
+// - 本番/ステージング: AWS_BRANCHにブランチ名が設定される
+const isSandbox = !process.env.AWS_BRANCH;
+const branchName = process.env.AWS_BRANCH || 'dev';
 
 const backend = defineBackend({
   auth,
@@ -14,6 +21,7 @@ const { endpoint } = createMarpAgent({
   stack: agentCoreStack,
   userPool: backend.auth.resources.userPool,
   userPoolClient: backend.auth.resources.userPoolClient,
+  nameSuffix: branchName,
 });
 
 // フロントエンドにエンドポイント情報を渡す
@@ -21,5 +29,6 @@ backend.addOutput({
   custom: {
     agentEndpointArn: endpoint.agentRuntimeEndpointArn,
     agentRuntimeArn: endpoint.agentRuntimeArn,
+    environment: isSandbox ? 'sandbox' : branchName,
   },
 });

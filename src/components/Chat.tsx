@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { invokeAgent, invokeAgentMock } from '../hooks/useAgentCore';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -12,6 +13,9 @@ interface ChatProps {
 }
 
 const INITIAL_MESSAGE = 'どんな資料を作りたいですか？';
+
+// モック使用フラグ（VITE_USE_MOCK=true で強制的にモック使用）
+const useMock = import.meta.env.VITE_USE_MOCK === 'true';
 
 export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -70,24 +74,34 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
     setMessages(prev => [...prev, { role: 'assistant', content: '', isStreaming: true }]);
 
     try {
-      // TODO: 実際のエージェント呼び出しに置き換え
-      // ローカル開発用のモック
-      await mockAgentCall(userMessage, currentMarkdown, (chunk, type) => {
-        if (type === 'text') {
+      // デフォルトは本番API、VITE_USE_MOCK=trueでモック使用
+      const invoke = useMock ? invokeAgentMock : invokeAgent;
+
+      await invoke(userMessage, currentMarkdown, {
+        onText: (text) => {
           setStatus(''); // テキストが来たらステータスを消す
           setMessages(prev =>
             prev.map((msg, idx) =>
               idx === prev.length - 1 && msg.role === 'assistant'
-                ? { ...msg, content: msg.content + chunk }
+                ? { ...msg, content: msg.content + text }
                 : msg
             )
           );
-        } else if (type === 'status') {
-          setStatus(chunk);
-        } else if (type === 'markdown') {
-          onMarkdownGenerated(chunk);
+        },
+        onStatus: (status) => {
+          setStatus(status);
+        },
+        onMarkdown: (markdown) => {
+          onMarkdownGenerated(markdown);
           setStatus('');
-        }
+        },
+        onError: (error) => {
+          console.error('Agent error:', error);
+          throw error;
+        },
+        onComplete: () => {
+          // 完了時の処理（必要に応じて）
+        },
       });
 
       // ストリーミング完了
@@ -176,56 +190,4 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
       </form>
     </div>
   );
-}
-
-// モックのエージェント呼び出し（ローカル開発用）
-async function mockAgentCall(
-  prompt: string,
-  _currentMarkdown: string,
-  onChunk: (chunk: string, type: 'text' | 'status' | 'markdown') => void
-) {
-  // 思考過程をストリーミング
-  const thinkingText = `${prompt}についてスライドを作成しますね。\n\n構成を考えています...`;
-  for (const char of thinkingText) {
-    onChunk(char, 'text');
-    await sleep(20);
-  }
-
-  onChunk('スライドを生成しています...', 'status');
-  await sleep(1000);
-
-  // サンプルマークダウンを生成
-  const sampleMarkdown = `---
-marp: true
-theme: default
-class: invert
-size: 16:9
-paginate: true
----
-
-# ${prompt}
-
-サンプルスライド
-
----
-
-# スライド 2
-
-- ポイント 1
-- ポイント 2
-- ポイント 3
-
----
-
-# まとめ
-
-ご清聴ありがとうございました
-`;
-
-  onChunk(sampleMarkdown, 'markdown');
-  onChunk('\n\nスライドを生成しました！プレビュータブで確認できます。', 'text');
-}
-
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

@@ -1,0 +1,196 @@
+import { fetchAuthSession } from 'aws-amplify/auth';
+import outputs from '../../amplify_outputs.json';
+
+export interface AgentCoreCallbacks {
+  onText: (text: string) => void;
+  onStatus: (status: string) => void;
+  onMarkdown: (markdown: string) => void;
+  onError: (error: Error) => void;
+  onComplete: () => void;
+}
+
+export async function invokeAgent(
+  prompt: string,
+  currentMarkdown: string,
+  callbacks: AgentCoreCallbacks
+): Promise<void> {
+  const endpointArn = outputs.custom?.agentEndpointArn;
+  if (!endpointArn) {
+    callbacks.onError(new Error('AgentCore endpoint ARN not configured'));
+    return;
+  }
+
+  // ARNからリージョンとランタイムARN、エンドポイント名を抽出
+  // arn:aws:bedrock-agentcore:us-east-1:715841358122:runtime/marp_agent-xxx/runtime-endpoint/marp_agent_endpoint
+  const arnParts = endpointArn.split(':');
+  const region = arnParts[3];
+  const resourceParts = arnParts[5].split('/');
+  const runtimeId = resourceParts[1];
+  const endpointName = resourceParts[3]; // marp_agent_endpoint
+
+  // RuntimeのARNを構築（エンドポイント部分を除く）
+  const runtimeArn = `arn:aws:bedrock-agentcore:${region}:${arnParts[4]}:runtime/${runtimeId}`;
+
+  // ARNをURLエンコード
+  const encodedArn = encodeURIComponent(runtimeArn);
+
+  // AgentCore APIエンドポイント
+  const url = `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodedArn}/invocations?qualifier=${endpointName}`;
+
+  try {
+    // Cognito認証トークンを取得（AgentCoreはclient_idクレームを検証するためアクセストークンが必要）
+    const session = await fetchAuthSession();
+    const accessToken = session.tokens?.accessToken?.toString();
+
+    if (!accessToken) {
+      callbacks.onError(new Error('認証が必要です。ログインしてください。'));
+      return;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        prompt,
+        markdown: currentMarkdown,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Response body is not readable');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            callbacks.onComplete();
+            return;
+          }
+
+          try {
+            const event = JSON.parse(data);
+            handleEvent(event, callbacks);
+          } catch {
+            // JSONパースエラーは無視
+          }
+        }
+      }
+    }
+
+    callbacks.onComplete();
+  } catch (error) {
+    callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+function handleEvent(
+  event: { type?: string; content?: string; data?: string; error?: string; message?: string },
+  callbacks: AgentCoreCallbacks
+) {
+  // APIはcontent または data フィールドでデータを返す
+  const textValue = event.content || event.data;
+
+  switch (event.type) {
+    case 'text':
+      if (textValue) {
+        callbacks.onText(textValue);
+      }
+      break;
+    case 'status':
+      if (textValue) {
+        callbacks.onStatus(textValue);
+      }
+      break;
+    case 'markdown':
+      if (textValue) {
+        callbacks.onMarkdown(textValue);
+      }
+      break;
+    case 'error':
+      if (event.error || event.message || textValue) {
+        callbacks.onError(new Error(event.error || event.message || textValue));
+      }
+      break;
+    default:
+      // エラーフィールドがある場合はエラーとして処理
+      if (event.error) {
+        callbacks.onError(new Error(event.error));
+      }
+      // dataフィールドがある場合はテキストとして扱う
+      else if (textValue) {
+        callbacks.onText(textValue);
+      }
+  }
+}
+
+// モック実装（ローカル開発用）
+export async function invokeAgentMock(
+  prompt: string,
+  _currentMarkdown: string,
+  callbacks: AgentCoreCallbacks
+): Promise<void> {
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // 思考過程をストリーミング
+  const thinkingText = `${prompt}についてスライドを作成しますね。\n\n構成を考えています...`;
+  for (const char of thinkingText) {
+    callbacks.onText(char);
+    await sleep(20);
+  }
+
+  callbacks.onStatus('スライドを生成しています...');
+  await sleep(1000);
+
+  // サンプルマークダウンを生成
+  const sampleMarkdown = `---
+marp: true
+theme: default
+class: invert
+size: 16:9
+paginate: true
+---
+
+# ${prompt}
+
+サンプルスライド
+
+---
+
+# スライド 2
+
+- ポイント 1
+- ポイント 2
+- ポイント 3
+
+---
+
+# まとめ
+
+ご清聴ありがとうございました
+`;
+
+  callbacks.onMarkdown(sampleMarkdown);
+  callbacks.onText('\n\nスライドを生成しました！プレビュータブで確認できます。');
+  callbacks.onComplete();
+}
