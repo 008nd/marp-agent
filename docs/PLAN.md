@@ -115,7 +115,7 @@ k.gotoさんにより、CDK hotswapがAgentCore Runtimeに対応した。
 | Step 2 | ✅完了 | エージェント実装（Strands Agent + Marp CLI） |
 | Step 3 | ✅完了 | インフラ構築（AgentCore Runtime CDK） |
 | Step 4 | ✅完了 | フロントエンド実装（チャットUI、プレビュー、SSE対応） |
-| Step 5 | 🔄進行中 | 統合・テスト |
+| Step 5 | ✅完了 | 統合・テスト（E2Eテスト全件PASS） |
 
 ### Step 5 詳細進捗
 
@@ -127,6 +127,9 @@ k.gotoさんにより、CDK hotswapがAgentCore Runtimeに対応した。
 | 環境分岐実装 | ✅完了 | AWS_BRANCHで判定、nameSuffix追加 |
 | 認証UI追加 | ✅完了 | Authenticator + 日本語化 |
 | 本番API接続 | ✅完了 | Cognito認証 + AgentCore SSE動作確認済み |
+| ステータス表示改善 | ✅完了 | 重複防止 + Web検索/スライド生成の状態遷移 |
+| PDFダウンロード | ✅完了 | 日本語対応（fonts-noto-cjk）、Base64デコード |
+| E2Eテスト | ✅完了 | tests/e2e-test.md、Playwright MCP使用 |
 
 ### 解決済み: 認証問題
 
@@ -163,9 +166,11 @@ resources: [
 - [x] チャットUI（指示入力）
 - [x] スライド生成（Marp Markdown）
 - [x] リアルタイムプレビュー（Marp Core使用）
-- [ ] PDFダウンロード ← エージェント側は実装済み、フロント連携未完
+- [x] PDFダウンロード ← 日本語対応完了（fonts-noto-cjk）
 
 ### 追加機能（Phase 2）
+- [ ] プレビュー画面から修正指示ボタン
+- [ ] チャット応答のマークダウンレンダリング
 - [ ] スライド編集（マークダウンエディタ）
 - [ ] テーマ選択
 - [ ] 画像アップロード・挿入
@@ -203,7 +208,9 @@ marp-agent/
 │   │       └── agent.py         # Strands Agent実装 ✅
 │   └── backend.ts               # バックエンド統合 ✅
 ├── tests/
-│   └── test_agent.py            # エージェント単体テスト ✅
+│   ├── test_agent.py            # エージェント単体テスト ✅
+│   ├── e2e-test.md              # E2Eテストチェックリスト ✅
+│   └── screenshots/             # テスト用スクリーンショット（.gitignore）
 ├── src/
 │   ├── App.tsx                  # メインアプリ + Authenticator ✅
 │   ├── components/

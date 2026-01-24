@@ -42,3 +42,6 @@ uv.lock
 # Test screenshots
 tests/screenshots/*
 !tests/screenshots/.gitkeep
+
+# Playwright MCP temp files
+.playwright-mcp/

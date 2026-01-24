@@ -56,8 +56,23 @@
 | フェーズ | 表示方法 |
 |---------|---------|
 | 思考過程（テキスト生成） | チャット欄にリアルタイムストリーミング描画 |
-| スライド生成中 | ステータスメッセージ（「スライドを生成しています...」） |
-| 完了 | プレビュータブに自動切り替え or 通知 |
+| Web検索中 | ステータスメッセージ + スピナー |
+| Web検索完了 | ステータスメッセージ + チェックマーク |
+| スライド生成中 | ステータスメッセージ + スピナー |
+| スライド生成完了 | ステータスメッセージ + チェックマーク |
+| 完了 | プレビュータブに自動切り替え |
+
+### ステータス表示仕様
+
+| 状態 | テキスト | アイコン |
+|------|---------|---------|
+| 初期思考中 | 「考え中...」 | なし（テキストエリアに表示） |
+| Web検索中 | 「Web検索中...」 | スピナー（回転アニメーション） |
+| Web検索完了 | 「Web検索完了」 | チェックマーク（緑色✓） |
+| スライド生成中 | 「スライドを生成中...」 | スピナー（回転アニメーション） |
+| スライド生成完了 | 「スライドを生成しました」 | チェックマーク（緑色✓） |
+
+**重複防止**: 同じステータスが複数回表示されないよう、追加前に既存チェックを行う
 
 ```
 チャット欄の例:
@@ -198,12 +213,22 @@ theme: default
 AgentCoreコンテナ内でMarp CLIを実行：
 
 ```dockerfile
-# Node.js + Marp CLI
+# Node.js + Marp CLI + 日本語フォント
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    chromium \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -fv
+
 RUN npm install -g @marp-team/marp-cli
 
-# Chromium（PDF出力用）
-RUN apt-get install -y chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ```
+
+**注意**: `fonts-noto-cjk` がないとPDFで日本語が文字化け（豆腐文字）になる
 
 ---
 
@@ -328,8 +353,37 @@ data: [DONE]
 ## 8. 今後の拡張（Phase 2）
 
 - [x] Web検索機能（Tavily API統合）← 実装済み
+- [x] PDFダウンロード（日本語対応）← 実装済み
+- [ ] プレビュー画面から修正指示ボタン（チャットタブに戻って入力欄にフォーカス）
+- [ ] チャット応答のマークダウンレンダリング（react-markdown）
 - [ ] マークダウン編集機能（シンタックスハイライト付き）
 - [ ] テーマ選択（default / gaia / uncover）
 - [ ] 画像アップロード・挿入
 - [ ] スライド履歴管理
 - [ ] HTML / PPTX 出力対応
+
+---
+
+## 9. テスト仕様
+
+### E2Eテスト
+
+テストチェックリスト: `tests/e2e-test.md`
+
+| TC | テスト名 | 確認内容 |
+|:---|:--------|:---------|
+| TC1 | 認証画面表示 | タイトル、日本語UI、コンソールエラーなし |
+| TC2 | ログイン後のメイン画面 | チャットUI、ログアウトボタン |
+| TC3 | スライド生成（基本） | ステータス遷移、プレビュー表示 |
+| TC4 | Web検索付きスライド生成 | Web検索→スライド生成のステータス遷移 |
+| TC5 | PDFダウンロード | PDF生成、日本語表示 |
+
+### テスト実行方法
+
+```bash
+# Playwright MCPを使用した自動テスト
+# Claude Codeのapp-test-debug-agentで実行
+
+# スクリーンショット保存先
+tests/screenshots/  # .gitignoreで除外
+```

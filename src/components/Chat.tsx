@@ -198,7 +198,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
               <div key={index} className="flex justify-start">
                 <div className="bg-blue-50 text-blue-700 rounded-lg px-4 py-2 border border-blue-200">
                   <span className="text-sm flex items-center gap-2">
-                    {message.statusText === 'スライドを生成しました' ? (
+                    {message.statusText === 'スライドを生成しました' || message.statusText === 'Web検索完了' ? (
                       <span className="text-green-600">&#10003;</span>
                     ) : (
                       <span className="animate-spin">&#9696;</span>
