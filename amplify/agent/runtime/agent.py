@@ -17,7 +17,8 @@ SYSTEM_PROMPT = """あなたは「パワポ作るマン」、プロフェッシ�
   ```yaml
   ---
   marp: true
-  theme: gaia
+  theme: default
+  class: invert
   size: 16:9
   paginate: true
   ---

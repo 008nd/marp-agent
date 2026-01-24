@@ -201,7 +201,7 @@ const userPoolClient = backend.auth.resources.userPoolClient;
 ### 参考リンク
 - [CDK Hotswap × AgentCore Runtime](https://go-to-k.hatenablog.com/entry/cdk-hotswap-bedrock-agentcore-runtime)
 
-### 対応状況（2025/1/24時点）
+### 対応状況（2026/1時点）
 
 | 項目 | 状況 |
 |------|------|
@@ -244,11 +244,22 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ```yaml
 ---
 marp: true
-theme: gaia
+theme: default
+class: invert
 size: 16:9
 paginate: true
 ---
 ```
+
+### 組み込みテーマ
+| テーマ | 特徴 |
+|--------|------|
+| default | シンプルな白背景 |
+| gaia | クラシックなデザイン |
+| uncover | ミニマル・モダン |
+
+### ダークモード（invertクラス）
+`class: invert` を追加すると黒背景のダークモードになる。
 
 ---
 
@@ -274,9 +285,27 @@ export default defineConfig({
 }
 ```
 
+### グラデーション定義
+```css
+/* カスタムクラスとして定義 */
+.bg-kag-gradient {
+  background: linear-gradient(to right, #1a3a6e, #5ba4d9);
+}
+
+.btn-kag {
+  background: linear-gradient(to right, #1a3a6e, #5ba4d9);
+  transition: all 0.2s;
+}
+
+.btn-kag:hover {
+  background: linear-gradient(to right, #142d54, #4a93c8);
+}
+```
+
 ### 使用方法
 ```jsx
-<h1 className="text-kag-blue">タイトル</h1>
+<header className="bg-kag-gradient">ヘッダー</header>
+<button className="btn-kag text-white">送信</button>
 ```
 
 ---
@@ -295,16 +324,36 @@ import Marp from '@marp-team/marp-core';
 const marp = new Marp();
 const { html, css } = marp.render(markdown);
 
-// HTMLからスライドを抽出
+// SVG要素をそのまま抽出（DOM構造を維持）
 const parser = new DOMParser();
 const doc = parser.parseFromString(html, 'text/html');
-const sections = doc.querySelectorAll('section');
+const svgs = doc.querySelectorAll('svg[data-marpit-svg]');
 ```
 
 ### スライドプレビュー表示
-- 各スライドは `<section>` タグで区切られる
-- CSSも一緒に適用する必要あり
-- サムネイル表示には `transform: scale(0.5)` などでスケールダウン
+```tsx
+<style>{css}</style>
+<div className="marpit w-full h-full [&>svg]:w-full [&>svg]:h-full">
+  <div dangerouslySetInnerHTML={{ __html: svg.outerHTML }} />
+</div>
+```
+
+**注意点**:
+- `section`だけ抽出するとCSSセレクタがマッチしない（`div.marpit > svg > foreignObject > section`構造が必要）
+- SVG要素をそのまま使い、`div.marpit`でラップする
+- SVGにはwidth/height属性がないため、CSSで`w-full h-full`を指定
+
+### Tailwind CSS との競合
+Marpの`class: invert`とTailwindの`.invert`ユーティリティが競合する。
+
+```css
+/* src/index.css に追加 */
+.marpit section.invert {
+  filter: none !important;
+}
+```
+
+これでTailwindの`filter: invert(100%)`を無効化し、Marpのダークテーマが正しく表示される。
 
 ---
 
@@ -327,13 +376,30 @@ src/
 
 ### ストリーミングUI実装パターン
 ```typescript
-// メッセージを逐次更新
-setMessages(prev => {
-  const newMessages = [...prev];
-  const lastMessage = newMessages[newMessages.length - 1];
-  lastMessage.content += chunk;
-  return newMessages;
-});
+// メッセージを逐次更新（イミュータブル更新が必須）
+setMessages(prev =>
+  prev.map((msg, idx) =>
+    idx === prev.length - 1 && msg.role === 'assistant'
+      ? { ...msg, content: msg.content + chunk }
+      : msg
+  )
+);
+```
+
+**注意**: シャローコピー（`[...prev]`）してオブジェクトを直接変更すると、React StrictModeで2回実行され文字がダブる。必ず `map` + スプレッド構文でイミュータブルに更新する。
+
+### タブ切り替え時の状態保持
+```tsx
+// NG: 条件レンダリングだとアンマウント時に状態が消える
+{activeTab === 'chat' ? <Chat /> : <Preview />}
+
+// OK: hiddenクラスで非表示にすれば状態が保持される
+<div className={activeTab === 'chat' ? '' : 'hidden'}>
+  <Chat />
+</div>
+<div className={activeTab === 'preview' ? '' : 'hidden'}>
+  <Preview />
+</div>
 ```
 
 ---

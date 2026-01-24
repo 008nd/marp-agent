@@ -45,18 +45,15 @@ function App() {
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       {/* ヘッダー */}
-      <header className="bg-kag-blue text-white px-6 py-4 shadow-md">
+      <header className="bg-kag-gradient text-white px-6 py-4 shadow-md">
         <div className="flex justify-between items-center">
           <h1 className="text-xl font-bold">パワポ作るマン</h1>
-          {markdown && (
-            <button
-              onClick={handleDownloadPdf}
-              disabled={isDownloading}
-              className="bg-white text-kag-blue px-4 py-1 rounded hover:bg-gray-100 disabled:opacity-50 transition-colors text-sm"
+          <button
+              onClick={() => {/* TODO: ログアウト処理 */}}
+              className="bg-white/20 text-white px-4 py-1 rounded hover:bg-white/30 transition-colors text-sm"
             >
-              {isDownloading ? '生成中...' : '📄 PDF'}
+              ログアウト
             </button>
-          )}
         </div>
       </header>
 
@@ -67,21 +64,21 @@ function App() {
             onClick={() => setActiveTab('chat')}
             className={`px-6 py-3 font-medium transition-colors ${
               activeTab === 'chat'
-                ? 'text-kag-blue border-b-2 border-kag-blue'
+                ? 'text-kag-gradient border-b-2 border-[#5ba4d9]'
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            💬 チャット
+            チャット
           </button>
           <button
             onClick={() => setActiveTab('preview')}
             className={`px-6 py-3 font-medium transition-colors relative ${
               activeTab === 'preview'
-                ? 'text-kag-blue border-b-2 border-kag-blue'
+                ? 'text-kag-gradient border-b-2 border-[#5ba4d9]'
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            📊 プレビュー
+            プレビュー
             {markdown && activeTab !== 'preview' && (
               <span className="absolute top-2 right-2 w-2 h-2 bg-green-500 rounded-full" />
             )}
@@ -91,18 +88,19 @@ function App() {
 
       {/* コンテンツ */}
       <main className="flex-1 overflow-hidden">
-        {activeTab === 'chat' ? (
+        <div className={`h-full ${activeTab === 'chat' ? '' : 'hidden'}`}>
           <Chat
             onMarkdownGenerated={handleMarkdownGenerated}
             currentMarkdown={markdown}
           />
-        ) : (
+        </div>
+        <div className={`h-full ${activeTab === 'preview' ? '' : 'hidden'}`}>
           <SlidePreview
             markdown={markdown}
             onDownloadPdf={handleDownloadPdf}
             isDownloading={isDownloading}
           />
-        )}
+        </div>
       </main>
     </div>
   );

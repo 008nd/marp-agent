@@ -11,12 +11,15 @@ interface ChatProps {
   currentMarkdown: string;
 }
 
+const INITIAL_MESSAGE = 'どんな資料を作りたいですか？';
+
 export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initializedRef = useRef(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -25,6 +28,33 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // 初期メッセージをストリーミング表示
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    const streamInitialMessage = async () => {
+      setMessages([{ role: 'assistant', content: '', isStreaming: true }]);
+
+      for (const char of INITIAL_MESSAGE) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        setMessages(prev =>
+          prev.map((msg, idx) =>
+            idx === 0 ? { ...msg, content: msg.content + char } : msg
+          )
+        );
+      }
+
+      setMessages(prev =>
+        prev.map((msg, idx) =>
+          idx === 0 ? { ...msg, isStreaming: false } : msg
+        )
+      );
+    };
+
+    streamInitialMessage();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,14 +74,14 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
       // ローカル開発用のモック
       await mockAgentCall(userMessage, currentMarkdown, (chunk, type) => {
         if (type === 'text') {
-          setMessages(prev => {
-            const newMessages = [...prev];
-            const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage.role === 'assistant') {
-              lastMessage.content += chunk;
-            }
-            return newMessages;
-          });
+          setStatus(''); // テキストが来たらステータスを消す
+          setMessages(prev =>
+            prev.map((msg, idx) =>
+              idx === prev.length - 1 && msg.role === 'assistant'
+                ? { ...msg, content: msg.content + chunk }
+                : msg
+            )
+          );
         } else if (type === 'status') {
           setStatus(chunk);
         } else if (type === 'markdown') {
@@ -61,25 +91,22 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
       });
 
       // ストリーミング完了
-      setMessages(prev => {
-        const newMessages = [...prev];
-        const lastMessage = newMessages[newMessages.length - 1];
-        if (lastMessage.role === 'assistant') {
-          lastMessage.isStreaming = false;
-        }
-        return newMessages;
-      });
+      setMessages(prev =>
+        prev.map((msg, idx) =>
+          idx === prev.length - 1 && msg.role === 'assistant'
+            ? { ...msg, isStreaming: false }
+            : msg
+        )
+      );
     } catch (error) {
       console.error('Error:', error);
-      setMessages(prev => {
-        const newMessages = [...prev];
-        const lastMessage = newMessages[newMessages.length - 1];
-        if (lastMessage.role === 'assistant') {
-          lastMessage.content = 'エラーが発生しました。もう一度お試しください。';
-          lastMessage.isStreaming = false;
-        }
-        return newMessages;
-      });
+      setMessages(prev =>
+        prev.map((msg, idx) =>
+          idx === prev.length - 1 && msg.role === 'assistant'
+            ? { ...msg, content: 'エラーが発生しました。もう一度お試しください。', isStreaming: false }
+            : msg
+        )
+      );
     } finally {
       setIsLoading(false);
       setStatus('');
@@ -96,32 +123,34 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
             <p className="text-sm mt-2">例: 「AWS入門の5枚スライドを作って」</p>
           </div>
         )}
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
+        {messages.map((message, index) => {
+          const isLastAssistant = message.role === 'assistant' && index === messages.length - 1;
+          const showStatus = isLastAssistant && !message.content && status;
+
+          return (
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                message.role === 'user'
-                  ? 'bg-kag-blue text-white'
-                  : 'bg-gray-100 text-gray-800'
-              }`}
+              key={index}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <pre className="whitespace-pre-wrap font-sans text-sm">
-                {message.content}
-                {message.isStreaming && <span className="animate-pulse">▌</span>}
-              </pre>
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                  message.role === 'user'
+                    ? 'bg-kag-gradient text-white'
+                    : 'bg-gray-100 text-gray-800'
+                }`}
+              >
+                {showStatus ? (
+                  <span className="text-sm text-gray-500">{status}</span>
+                ) : (
+                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                    {message.content}
+                    {message.isStreaming && <span className="animate-pulse">▌</span>}
+                  </pre>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-        {status && (
-          <div className="flex justify-start">
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-yellow-800 text-sm">
-              ⏳ {status}
-            </div>
-          </div>
-        )}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 
@@ -133,13 +162,13 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="スライドの指示を入力..."
-            className="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-kag-blue"
+            className="flex-1 border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-[#5ba4d9] focus:border-transparent bg-gray-50"
             disabled={isLoading}
           />
           <button
             type="submit"
             disabled={isLoading || !input.trim()}
-            className="bg-kag-blue text-white px-6 py-2 rounded-lg hover:bg-kag-blue-dark disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="btn-kag text-white px-6 py-2 rounded-lg"
           >
             送信
           </button>
@@ -168,7 +197,8 @@ async function mockAgentCall(
   // サンプルマークダウンを生成
   const sampleMarkdown = `---
 marp: true
-theme: gaia
+theme: default
+class: invert
 size: 16:9
 paginate: true
 ---

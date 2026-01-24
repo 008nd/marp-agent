@@ -4,4 +4,39 @@
   --color-kag-blue: #0e0d6a;
   --color-kag-blue-light: #1a1994;
   --color-kag-blue-dark: #0a0a4d;
+  --color-kag-cyan: #4ecdc4;
+}
+
+.bg-kag-gradient {
+  background: linear-gradient(to right, #1a3a6e, #5ba4d9);
+}
+
+.btn-kag {
+  background: linear-gradient(to right, #1a3a6e, #5ba4d9);
+  transition: all 0.2s;
+}
+
+.btn-kag:hover {
+  background: linear-gradient(to right, #142d54, #4a93c8);
+}
+
+.btn-kag:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.border-kag-gradient {
+  border-color: #5ba4d9;
+}
+
+.text-kag-gradient {
+  background: linear-gradient(to right, #1a3a6e, #5ba4d9);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* MarpのinvertクラスとTailwindの競合を解消 */
+.marpit section.invert {
+  filter: none !important;
 }
