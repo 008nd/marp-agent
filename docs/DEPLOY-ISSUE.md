@@ -1,19 +1,36 @@
 # 本番デプロイ問題整理
 
+## 前提条件
+
+### AgentCore Runtime の制約
+- Bedrock AgentCore Runtime は **ARM64 のみ対応**
+- Docker イメージは `--platform=linux/arm64` でビルドする必要がある
+
+### CDK Hotswap の制約
+- CDK Hotswap（高速デプロイ）を利用するには `AgentRuntimeArtifact.fromAsset()` を使用する必要がある
+- `deploy-time-build` は Hotswap 非対応のため使用できない
+- `fromAsset()` は**ビルド環境で Docker イメージをビルド**する
+
+### Amplify Console の制約
+- Amplify Console のビルド環境は **x86_64 のみ対応**
+- カスタムビルドイメージも x86_64 のみサポート
+- ARM64 イメージ（`amazonlinux-aarch64-standard:3.0`）を指定するとコンテナが起動しない
+
 ## 問題
 
-Amplify Console での本番デプロイが失敗している。
+上記の前提条件により、**Amplify Console で ARM64 Docker イメージをビルドできない**。
 
-## 根本原因
+```
+AgentCore Runtime: ARM64 必須
+         ↓
+Amplify Console: x86_64 のみ
+         ↓
+ビルド不可
+```
 
-| 環境 | アーキテクチャ |
-|------|---------------|
-| AgentCore Runtime | ARM64 のみ対応 |
-| Amplify Console ビルド環境 | x86_64 のみ対応 |
+## 解決策の案
 
-→ **Amplify Console では ARM64 Docker イメージをビルドできない**
-
-## 解決策: ECR 事前プッシュ方式
+### 案A: ECR 事前プッシュ方式（推奨）
 
 ローカル（Mac ARM64）で Docker イメージをビルドして ECR にプッシュし、CDK で参照する。
 
@@ -24,33 +41,52 @@ Amplify Console での本番デプロイが失敗している。
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-**ポイント**: ECR からイメージを参照するだけなので、Amplify Console 側で Docker は不要。カスタムビルドイメージもデフォルトに戻せる。
+**メリット**:
+- Amplify Console で Docker ビルド不要
+- カスタムビルドイメージも不要（デフォルトに戻せる）
+- 確実に ARM64 イメージを使用できる
 
-## 手順
+**デメリット**:
+- エージェントコード変更時に手動で ECR 再プッシュが必要
+- Hotswap の恩恵が薄れる（イメージ更新が手動のため）
 
-1. ✅ ECR リポジトリ作成済み
-   ```
-   715841358122.dkr.ecr.us-east-1.amazonaws.com/marp-agent
-   ```
+**実装方法**:
+- `fromAsset()` → `fromEcrRepository()` に変更
 
-2. ⬜ ローカルで Docker イメージをビルド・プッシュ
-   ```bash
-   cd amplify/agent/runtime
-   docker build -t marp-agent .
-   docker tag marp-agent:latest 715841358122.dkr.ecr.us-east-1.amazonaws.com/marp-agent:latest
-   docker push 715841358122.dkr.ecr.us-east-1.amazonaws.com/marp-agent:latest
-   ```
+### 案B: GitHub Actions で ECR プッシュ
 
-3. ⬜ `amplify/agent/resource.ts` を修正
-   - `fromAsset()` → `fromEcrRepository()` に変更
+GitHub Actions の ARM64 ランナーで Docker イメージをビルドし、ECR にプッシュ。
 
-4. ⬜ `amplify.yml` から Docker 起動設定を削除
+**メリット**:
+- コード変更時に自動でイメージ更新
+- CI/CD として完結
 
-5. ⬜ Amplify Console のビルドイメージをデフォルトに戻す
+**デメリット**:
+- GitHub Actions の追加設定が必要
+- Amplify Console と GitHub Actions の連携が複雑になる
 
-6. ⬜ コミット・プッシュして再デプロイ
+### 案C: Amplify を使わず CodePipeline + CodeBuild（ARM64）
 
-## 運用上の注意
+Amplify Console を使わず、CodePipeline と ARM64 対応の CodeBuild でビルド。
 
-- エージェントコード（agent.py 等）を変更した場合、手動で ECR に再プッシュが必要
-- 将来的には GitHub Actions で自動化を検討
+**メリット**:
+- ARM64 ネイティブビルドが可能
+- `fromAsset()` をそのまま使用可能
+
+**デメリット**:
+- Amplify の便利な機能（プレビュー、ブランチ連携等）が使えない
+- インフラ構築コストが高い
+
+## 現状
+
+案A（ECR 事前プッシュ方式）で進行中。
+
+### 完了
+- ECR リポジトリ作成済み: `715841358122.dkr.ecr.us-east-1.amazonaws.com/marp-agent`
+
+### 未完了
+- ローカルで Docker イメージをビルド・プッシュ
+- `amplify/agent/resource.ts` を `fromEcrRepository()` に変更
+- `amplify.yml` から Docker 起動設定を削除
+- Amplify Console のビルドイメージをデフォルトに戻す
+- コミット・プッシュして再デプロイ
