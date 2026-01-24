@@ -50,7 +50,7 @@ export function SlidePreview({ markdown, onDownloadPdf, isDownloading }: SlidePr
   return (
     <div className="flex flex-col h-full">
       {/* ヘッダー */}
-      <div className="flex justify-between items-center p-4 border-b">
+      <div className="flex justify-between items-center px-6 py-4 border-b">
         <span className="text-sm text-gray-600">
           {slides.length} スライド
         </span>
@@ -64,7 +64,7 @@ export function SlidePreview({ markdown, onDownloadPdf, isDownloading }: SlidePr
       </div>
 
       {/* スライド一覧 */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto px-6 py-4">
         <style>{css}</style>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {slides.map((slide) => (

@@ -60,7 +60,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
       {/* ヘッダー */}
       <header className="bg-kag-gradient text-white px-6 py-4 shadow-md">
         <div className="flex justify-between items-center">
-          <h1 className="text-xl font-bold">パワポ作るマン</h1>
+          <h1 className="text-xl font-bold">パワポ作るマン　by みのるん</h1>
           <button
               onClick={signOut}
               className="bg-white/20 text-white px-4 py-1 rounded hover:bg-white/30 transition-colors text-sm"
@@ -72,7 +72,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
 
       {/* タブ */}
       <div className="bg-white border-b">
-        <div className="flex">
+        <div className="flex px-6">
           <button
             onClick={() => setActiveTab('chat')}
             className={`px-6 py-3 font-medium transition-colors ${

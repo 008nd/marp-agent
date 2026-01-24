@@ -36,6 +36,45 @@ npm run build → 成功
 
 **環境はクリーンな状態**。次回セッションでsandboxを新規起動してテストを実行する。
 
+**【並行タスク】本番環境でPDFのテーマが適用されない問題を調査中**
+
+| 環境 | プレビュー | PDFダウンロード |
+|------|-----------|----------------|
+| sandbox（ローカル） | ✅ borderテーマ適用 | ✅ borderテーマ適用 |
+| 本番（Amplify Console） | ✅ borderテーマ適用 | ❌ テーマ未適用 |
+
+→ 本番環境のAgentCore RuntimeでPDF生成時にborder.cssが正しく参照されていない可能性あり
+
+### 調査結果（2026/1/24）
+
+**根本原因: Dockerfileで`border.css`がコンテナにコピーされていない**
+
+#### 問題の詳細
+
+| 環境 | agent.pyの位置 | border.cssの位置 | PDF生成 |
+|------|---------------|-----------------|---------|
+| sandbox | `./runtime/agent.py` | `./runtime/border.css` | ✅ 動作 |
+| 本番 | コンテナ内`/app/agent.py` | **コンテナ内に無い** | ❌ テーマ未適用 |
+
+#### agent.pyのコード（109-126行目）
+```python
+theme_path = Path(__file__).parent / "border.css"
+if theme_path.exists():  # ← コンテナ内に無いとFalse
+    cmd.extend(["--theme", str(theme_path)])
+```
+
+#### 修正方法
+
+Dockerfileに`border.css`のCOPYを追加：
+
+```dockerfile
+# エージェントコードとテーマをコピー
+COPY agent.py ./
+COPY border.css ./  # ← 追加
+```
+
+**✅ 2026-01-24 修正適用済み** - 次回デプロイで反映される
+
 ## 次のステップ（新しいセッションで実行）
 
 ### Step 1: sandbox起動

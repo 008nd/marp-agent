@@ -204,12 +204,53 @@ resources: [
 - [x] PDFダウンロード ← 日本語対応完了（fonts-noto-cjk）
 
 ### 追加機能（Phase 2）
-- [ ] プレビュー画面から修正指示ボタン
-- [ ] チャット応答のマークダウンレンダリング
-- [ ] スライド編集（マークダウンエディタ）
-- [ ] テーマ選択
-- [ ] 画像アップロード・挿入
-- [ ] スライド履歴管理
+
+※ 実装の容易さ順に並べ替え済み
+
+| # | タスク | 工数 | 備考 |
+|---|--------|------|------|
+| 1 | プレビュー画面の箇条書き行頭記号問題 | 小 | CSS追加のみ（2ファイル） |
+| 2 | チャット画面の横幅制限 | 小 | CSS変更（1ファイル） |
+| 3 | チャット応答末尾のカーソル記号を除去 | 小 | 条件確認（1ファイル） |
+| 4 | チャット応答のマークダウンレンダリング | 中 | ライブラリ追加 |
+| 5 | プレビュー画面から修正指示ボタン | 中 | UI追加 |
+| 6 | テーマ選択 | 中 | UI + ロジック |
+| 7 | スライド編集（マークダウンエディタ） | 大 | エディタライブラリ導入 |
+| 8 | 画像アップロード・挿入 | 大 | S3連携 |
+| 9 | スライド履歴管理 | 大 | DB連携 |
+
+### Phase 2 タスク調査結果
+
+#### 1. 箇条書き行頭記号問題
+- **原因**: Tailwind CSS v4のプリフライトが`ul, ol { list-style: none; }`を適用
+- **修正方針**: `border.css`にリストスタイルを明示的に定義
+- **修正対象**: `src/themes/border.css`と`amplify/agent/runtime/border.css`の両方
+- **追加CSS例**:
+  ```css
+  ul, ol { list-style-position: outside; }
+  ul { list-style-type: disc; }
+  ol { list-style-type: decimal; }
+  ul ul { list-style-type: circle; }
+  ```
+
+#### 2. チャット横幅制限
+- **現状**: チャットコンテナに横幅制限がなく全幅使用
+- **修正方針**: App.tsxの`<main>`内に`max-w-4xl mx-auto`ラッパーを追加
+- **実装例**:
+  ```tsx
+  <main className="flex-1 overflow-hidden bg-gray-50">
+    <div className="h-full flex justify-center">
+      <div className="w-full max-w-4xl flex flex-col">
+        <Chat ... />
+      </div>
+    </div>
+  </main>
+  ```
+
+#### 3. カーソル記号問題
+- **原因**: `Chat.tsx:230`で意図的に表示している `▌` 記号
+- **コード**: `{message.isStreaming && <span className="animate-pulse">▌</span>}`
+- **修正方針**: ストリーミング完了時の`isStreaming`フラグ更新タイミングを見直し
 
 ## ドキュメント構成
 

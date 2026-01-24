@@ -1,92 +1,86 @@
 # 本番デプロイ問題整理
 
-## 前提条件
-
-### AgentCore Runtime の制約
-- Bedrock AgentCore Runtime は **ARM64 のみ対応**
-- Docker イメージは `--platform=linux/arm64` でビルドする必要がある
-
-### CDK Hotswap の制約
-- CDK Hotswap（高速デプロイ）を利用するには `AgentRuntimeArtifact.fromAsset()` を使用する必要がある
-- `deploy-time-build` は Hotswap 非対応のため使用できない
-- `fromAsset()` は**ビルド環境で Docker イメージをビルド**する
-
-### Amplify Console の制約
-- Amplify Console のビルド環境は **x86_64 のみ対応**
-- カスタムビルドイメージも x86_64 のみサポート
-- ARM64 イメージ（`amazonlinux-aarch64-standard:3.0`）を指定するとコンテナが起動しない
-
 ## 問題
 
-上記の前提条件により、**Amplify Console で ARM64 Docker イメージをビルドできない**。
+Amplify Console での本番デプロイが失敗している。
+
+## 根本原因
+
+| 環境 | アーキテクチャ |
+|------|---------------|
+| AgentCore Runtime | ARM64 のみ対応 |
+| Amplify Console ビルド環境 | x86_64 のみ対応 |
+
+→ **Amplify Console では ARM64 Docker イメージを直接ビルドできない**
+
+## 解決策: 環境分岐（deploy-time-build）
+
+ごとうさんのアドバイスに基づき、環境によってビルド方式を分岐させる。
 
 ```
-AgentCore Runtime: ARM64 必須
-         ↓
-Amplify Console: x86_64 のみ
-         ↓
-ビルド不可
+┌─────────────────────────────────────────────────────────────┐
+│  sandbox（ローカル開発）                                      │
+│  ・fromAsset() でローカル ARM64 ビルド                       │
+│  ・Mac の Docker でネイティブビルド                          │
+├─────────────────────────────────────────────────────────────┤
+│  本番（Amplify Console）                                     │
+│  ・deploy-time-build で CodeBuild ARM64 ビルド              │
+│  ・ContainerImageBuild + fromEcrRepository()                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 解決策の案
+### 使用ライブラリ
 
-### 案A: ECR 事前プッシュ方式（推奨）
+- [deploy-time-build](https://github.com/tmokmss/deploy-time-build) by 友岡さん
+  - CodeBuild でデプロイ時にコンテナイメージをビルド
+  - `platform: Platform.LINUX_ARM64` で ARM64 対応
 
-ローカル（Mac ARM64）で Docker イメージをビルドして ECR にプッシュし、CDK で参照する。
+### 実装
 
+```typescript
+// amplify/agent/resource.ts
+const isSandbox = !process.env.AWS_BRANCH;
+
+if (isSandbox) {
+  // sandbox: ローカルでARM64ビルド
+  agentRuntimeArtifact = agentcore.AgentRuntimeArtifact.fromAsset(
+    path.join(__dirname, 'runtime')
+  );
+} else {
+  // 本番: CodeBuildでARM64ビルド
+  const containerImageBuild = new ContainerImageBuild(stack, 'MarpAgentImageBuild', {
+    directory: path.join(__dirname, 'runtime'),
+    platform: Platform.LINUX_ARM64,
+    tag: 'latest',
+  });
+  agentRuntimeArtifact = agentcore.AgentRuntimeArtifact.fromEcrRepository(
+    containerImageBuild.repository,
+    'latest'
+  );
+}
+
+// 依存関係設定（イメージビルド完了後にRuntime作成）
+if (containerImageBuild) {
+  runtime.node.addDependency(containerImageBuild);
+}
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  ローカル Mac    │────▶│      ECR        │────▶│  Amplify Console │
-│  (ARM64 ビルド)  │push │  (イメージ保存)  │参照 │  (Docker不要)    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-```
 
-**メリット**:
-- Amplify Console で Docker ビルド不要
-- カスタムビルドイメージも不要（デフォルトに戻せる）
-- 確実に ARM64 イメージを使用できる
+### 依存関係設定の重要性
 
-**デメリット**:
-- エージェントコード変更時に手動で ECR 再プッシュが必要
-- Hotswap の恩恵が薄れる（イメージ更新が手動のため）
+`runtime.node.addDependency(containerImageBuild)` により、CloudFormation が以下の順序でリソースを作成する：
 
-**実装方法**:
-- `fromAsset()` → `fromEcrRepository()` に変更
+1. ContainerImageBuild（CodeBuild で ARM64 イメージをビルド）
+2. ECR にイメージがプッシュされる
+3. AgentCore Runtime が ECR イメージを参照して作成される
 
-### 案B: GitHub Actions で ECR プッシュ
+この設定がないと、Runtime 作成時にまだイメージが存在せずエラーになる。
 
-GitHub Actions の ARM64 ランナーで Docker イメージをビルドし、ECR にプッシュ。
+## 注意事項
 
-**メリット**:
-- コード変更時に自動でイメージ更新
-- CI/CD として完結
+- deploy-time-build を使う場合、hotswap デプロイは動作しない（CloudFormation トークン解決の問題）
+- 本番デプロイは通常のCloudFormationデプロイとなる
 
-**デメリット**:
-- GitHub Actions の追加設定が必要
-- Amplify Console と GitHub Actions の連携が複雑になる
+## 参考
 
-### 案C: Amplify を使わず CodePipeline + CodeBuild（ARM64）
-
-Amplify Console を使わず、CodePipeline と ARM64 対応の CodeBuild でビルド。
-
-**メリット**:
-- ARM64 ネイティブビルドが可能
-- `fromAsset()` をそのまま使用可能
-
-**デメリット**:
-- Amplify の便利な機能（プレビュー、ブランチ連携等）が使えない
-- インフラ構築コストが高い
-
-## 現状
-
-案A（ECR 事前プッシュ方式）で進行中。
-
-### 完了
-- ECR リポジトリ作成済み: `715841358122.dkr.ecr.us-east-1.amazonaws.com/marp-agent`
-
-### 未完了
-- ローカルで Docker イメージをビルド・プッシュ
-- `amplify/agent/resource.ts` を `fromEcrRepository()` に変更
-- `amplify.yml` から Docker 起動設定を削除
-- Amplify Console のビルドイメージをデフォルトに戻す
-- コミット・プッシュして再デプロイ
+- [CDK Hotswap × AgentCore Runtime](https://go-to-k.hatenablog.com/entry/cdk-hotswap-bedrock-agentcore-runtime) by ごとうさん
+- [deploy-time-build](https://github.com/tmokmss/deploy-time-build) by 友岡さん

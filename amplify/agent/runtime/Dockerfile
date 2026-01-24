@@ -22,8 +22,9 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# エージェントコードをコピー
+# エージェントコードとテーマをコピー
 COPY agent.py ./
+COPY border.css ./
 
 EXPOSE 8080
 

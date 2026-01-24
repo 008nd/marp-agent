@@ -181,7 +181,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
   return (
     <div className="flex flex-col h-full">
       {/* メッセージ一覧 */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-8">
             <p className="text-lg">スライドを作成しましょう</p>
@@ -238,7 +238,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown }: ChatProps) {
       </div>
 
       {/* 入力フォーム */}
-      <form onSubmit={handleSubmit} className="border-t p-4">
+      <form onSubmit={handleSubmit} className="border-t px-6 py-4">
         <div className="flex gap-2">
           <input
             type="text"
