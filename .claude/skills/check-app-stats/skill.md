@@ -8,130 +8,190 @@ allowed-tools: Bash(aws:*)
 
 各Amplify環境（main/kag）のCognitoユーザー数とBedrock AgentCoreランタイムのトレース数を調査する。
 
-## 対象リソース
+## 実行方法
 
-リソースIDは動的に取得する（セキュリティ上ハードコードしない）。
-
-### 命名規則
-- **Cognito User Pool名**: `amplify-marp-agent-{env}-authUserPool...`（envは`main`または`kag`）
-- **AgentCore Runtime名**: `marp_agent_{env}-...`
-
-## 調査手順
-
-### 0. リソースIDの取得（最初に実行）
+**重要**: 以下のBashスクリプトを**そのまま1回で実行**すること。すべてのデータ取得を並列化し、1回の承認で完了する。
 
 ```bash
-# Cognito User Pool ID取得
-POOL_MAIN=$(aws cognito-idp list-user-pools --max-results 60 --region us-east-1 \
-  --query "UserPools[?contains(Name, 'marp-agent-main')].Id" --output text)
-POOL_KAG=$(aws cognito-idp list-user-pools --max-results 60 --region us-east-1 \
-  --query "UserPools[?contains(Name, 'marp-agent-kag')].Id" --output text)
+#!/bin/bash
+set -e
+
+REGION="us-east-1"
+OUTPUT_DIR="/tmp/marp-stats"
+mkdir -p "$OUTPUT_DIR"
+
+echo "📊 Marp Agent 利用状況を取得中..."
+
+# ========================================
+# 1. リソースID取得（並列実行）
+# ========================================
+echo "🔍 リソースIDを取得中..."
+
+# Cognito User Pool ID取得（marp-main, marp-kagで検索）
+POOL_MAIN=$(aws cognito-idp list-user-pools --max-results 60 --region $REGION \
+  --query "UserPools[?contains(Name, 'marp-main')].Id" --output text)
+POOL_KAG=$(aws cognito-idp list-user-pools --max-results 60 --region $REGION \
+  --query "UserPools[?contains(Name, 'marp-kag')].Id" --output text)
 
 # AgentCore ロググループ名取得
 LOG_MAIN=$(aws logs describe-log-groups \
   --log-group-name-prefix /aws/bedrock-agentcore/runtimes/marp_agent_main \
-  --region us-east-1 --query "logGroups[0].logGroupName" --output text)
+  --region $REGION --query "logGroups[0].logGroupName" --output text)
 LOG_KAG=$(aws logs describe-log-groups \
   --log-group-name-prefix /aws/bedrock-agentcore/runtimes/marp_agent_kag \
-  --region us-east-1 --query "logGroups[0].logGroupName" --output text)
+  --region $REGION --query "logGroups[0].logGroupName" --output text)
 
-echo "POOL_MAIN: $POOL_MAIN"
-echo "POOL_KAG: $POOL_KAG"
-echo "LOG_MAIN: $LOG_MAIN"
-echo "LOG_KAG: $LOG_KAG"
-```
+# ========================================
+# 2. Cognitoユーザー数取得
+# ========================================
+echo "👥 Cognitoユーザー数を取得中..."
+USERS_MAIN=$(aws cognito-idp describe-user-pool --user-pool-id "$POOL_MAIN" --region $REGION \
+  --query "UserPool.EstimatedNumberOfUsers" --output text 2>/dev/null || echo "0")
+USERS_KAG=$(aws cognito-idp describe-user-pool --user-pool-id "$POOL_KAG" --region $REGION \
+  --query "UserPool.EstimatedNumberOfUsers" --output text 2>/dev/null || echo "0")
 
-### 1. Cognitoユーザー数
+# ========================================
+# 3. CloudWatch Logsクエリを並列開始
+# ========================================
+echo "📈 CloudWatch Logsクエリを並列開始..."
+START_7D=$(date -v-7d +%s)
+START_24H=$(date -v-24H +%s)
+END_NOW=$(date +%s)
 
-各User Poolのユーザー数と状態を取得する。
+QUERY_FILTER='filter @message like /invocations/ or @message like /POST/ or @message like /invoke/'
 
-```bash
-# main
-aws cognito-idp describe-user-pool --user-pool-id "$POOL_MAIN" --region us-east-1 \
-  --query "UserPool.{Name:Name, EstimatedUsers:EstimatedNumberOfUsers}" --output table
-
-# kag
-aws cognito-idp describe-user-pool --user-pool-id "$POOL_KAG" --region us-east-1 \
-  --query "UserPool.{Name:Name, EstimatedUsers:EstimatedNumberOfUsers}" --output table
-```
-
-### 2. 日次 invocation 数（過去7日間・JST）
-
-CloudWatch Logs Insightsで日別のAPI呼び出し回数を取得する。`datefloor(@timestamp + 9h, 1d)` でJST基準に補正する。
-
-```bash
-# main
-QUERY_ID=$(aws logs start-query \
+# 日次クエリ開始（main/kag並列）
+Q_DAILY_MAIN=$(aws logs start-query \
   --log-group-name "$LOG_MAIN" \
-  --start-time $(date -v-7d +%s) \
-  --end-time $(date +%s) \
-  --query-string 'filter @message like /invocations/ or @message like /POST/ or @message like /invoke/ | stats count(*) as count by datefloor(@timestamp + 9h, 1d) as day_jst | sort day_jst asc' \
-  --region us-east-1 \
-  --query 'queryId' --output text)
-sleep 8
-aws logs get-query-results --query-id "$QUERY_ID" --region us-east-1
-```
+  --start-time $START_7D --end-time $END_NOW \
+  --query-string "$QUERY_FILTER | stats count(*) as count by datefloor(@timestamp + 9h, 1d) as day_jst | sort day_jst asc" \
+  --region $REGION --query 'queryId' --output text)
 
-kagも同様に `$LOG_KAG` で実行する。
+Q_DAILY_KAG=$(aws logs start-query \
+  --log-group-name "$LOG_KAG" \
+  --start-time $START_7D --end-time $END_NOW \
+  --query-string "$QUERY_FILTER | stats count(*) as count by datefloor(@timestamp + 9h, 1d) as day_jst | sort day_jst asc" \
+  --region $REGION --query 'queryId' --output text)
 
-### 3. 時間別 invocation 数（直近24時間・JST）
-
-```bash
-# main
-QUERY_ID=$(aws logs start-query \
+# 時間別クエリ開始（main/kag並列）
+Q_HOURLY_MAIN=$(aws logs start-query \
   --log-group-name "$LOG_MAIN" \
-  --start-time $(date -v-24H +%s) \
-  --end-time $(date +%s) \
-  --query-string 'filter @message like /invocations/ or @message like /POST/ or @message like /invoke/ | stats count(*) as count by datefloor(@timestamp + 9h, 1h) as hour_jst | sort hour_jst asc' \
-  --region us-east-1 \
-  --query 'queryId' --output text)
-sleep 8
-aws logs get-query-results --query-id "$QUERY_ID" --region us-east-1
-```
+  --start-time $START_24H --end-time $END_NOW \
+  --query-string "$QUERY_FILTER | stats count(*) as count by datefloor(@timestamp + 9h, 1h) as hour_jst | sort hour_jst asc" \
+  --region $REGION --query 'queryId' --output text)
 
-kagも同様に `$LOG_KAG` で実行する。
+Q_HOURLY_KAG=$(aws logs start-query \
+  --log-group-name "$LOG_KAG" \
+  --start-time $START_24H --end-time $END_NOW \
+  --query-string "$QUERY_FILTER | stats count(*) as count by datefloor(@timestamp + 9h, 1h) as hour_jst | sort hour_jst asc" \
+  --region $REGION --query 'queryId' --output text)
 
-### 4. Bedrockコスト（過去7日間・日別）
-
-Cost Explorerで日別のBedrockコストを取得する。サービス名は「Claude Sonnet 4.5 (Amazon Bedrock Edition)」等のモデル名で分類されている。
-
-```bash
-# 全サービスのコストを取得してBedrock関連をフィルタ
+# ========================================
+# 4. Bedrockコスト取得（クエリ待機中に並列実行）
+# ========================================
+echo "💰 Bedrockコストを取得中..."
 aws ce get-cost-and-usage \
   --time-period Start=$(date -v-7d +%Y-%m-%d),End=$(date +%Y-%m-%d) \
   --granularity DAILY \
   --metrics "UnblendedCost" \
   --group-by Type=DIMENSION,Key=SERVICE \
-  --region us-east-1 \
-  --output json > /tmp/all_cost.json
+  --region $REGION \
+  --output json > "$OUTPUT_DIR/cost.json"
 
-# 日別のClaude/Bedrock関連コストを集計
-cat /tmp/all_cost.json | jq -r '
+# ========================================
+# 5. クエリ結果取得（8秒待機後）
+# ========================================
+echo "⏳ クエリ完了を待機中..."
+sleep 8
+
+echo "📥 クエリ結果を取得中..."
+aws logs get-query-results --query-id "$Q_DAILY_MAIN" --region $REGION > "$OUTPUT_DIR/daily_main.json"
+aws logs get-query-results --query-id "$Q_DAILY_KAG" --region $REGION > "$OUTPUT_DIR/daily_kag.json"
+aws logs get-query-results --query-id "$Q_HOURLY_MAIN" --region $REGION > "$OUTPUT_DIR/hourly_main.json"
+aws logs get-query-results --query-id "$Q_HOURLY_KAG" --region $REGION > "$OUTPUT_DIR/hourly_kag.json"
+
+# ========================================
+# 6. 結果出力
+# ========================================
+echo ""
+echo "=========================================="
+echo "📊 MARP AGENT 利用状況レポート"
+echo "=========================================="
+echo ""
+
+echo "👥 Cognitoユーザー数"
+echo "  main: $USERS_MAIN 人"
+echo "  kag:  $USERS_KAG 人"
+echo "  合計: $((USERS_MAIN + USERS_KAG)) 人"
+echo ""
+
+echo "📈 日次invocation数（過去7日間・JST）"
+echo "[main]"
+jq -r '.results[] | "  \(.[] | select(.field == "day_jst") | .value | split(" ")[0]): \(.[] | select(.field == "count") | .value) 回"' "$OUTPUT_DIR/daily_main.json"
+TOTAL_MAIN=$(jq '[.results[][] | select(.field == "count") | .value | tonumber] | add // 0' "$OUTPUT_DIR/daily_main.json")
+echo "  合計: $TOTAL_MAIN 回"
+echo ""
+echo "[kag]"
+jq -r '.results[] | "  \(.[] | select(.field == "day_jst") | .value | split(" ")[0]): \(.[] | select(.field == "count") | .value) 回"' "$OUTPUT_DIR/daily_kag.json"
+TOTAL_KAG=$(jq '[.results[][] | select(.field == "count") | .value | tonumber] | add // 0' "$OUTPUT_DIR/daily_kag.json")
+echo "  合計: $TOTAL_KAG 回"
+echo ""
+
+echo "⏰ 時間別invocation数（直近24時間・JST）"
+echo "[main - 上位5時間帯]"
+jq -r '[.results[] | {hour: (.[] | select(.field == "hour_jst") | .value), count: (.[] | select(.field == "count") | .value | tonumber)}] | sort_by(-.count) | .[0:5][] | "  \(.hour): \(.count) 回"' "$OUTPUT_DIR/hourly_main.json"
+echo ""
+echo "[kag - 上位5時間帯]"
+jq -r '[.results[] | {hour: (.[] | select(.field == "hour_jst") | .value), count: (.[] | select(.field == "count") | .value | tonumber)}] | sort_by(-.count) | .[0:5][] | "  \(.hour): \(.count) 回"' "$OUTPUT_DIR/hourly_kag.json"
+echo ""
+
+echo "💰 Bedrockコスト（過去7日間・日別）"
+jq -r '
   .ResultsByTime[] |
   .TimePeriod.Start as $date |
   [.Groups[] | select(.Keys[0] | contains("Claude") or contains("Bedrock")) | .Metrics.UnblendedCost.Amount | tonumber] |
   add // 0 |
-  "\($date)\t\(.)"
-' | awk -F'\t' '{printf "%s: $%.2f\n", $1, $2}'
+  "  \($date): $\(. | . * 100 | floor / 100)"
+' "$OUTPUT_DIR/cost.json"
+
+TOTAL_COST=$(jq -r '
+  [.ResultsByTime[].Groups[] | select(.Keys[0] | contains("Claude") or contains("Bedrock")) | .Metrics.UnblendedCost.Amount | tonumber] | add // 0
+' "$OUTPUT_DIR/cost.json")
+echo "  週間合計: \$$TOTAL_COST"
+echo ""
+
+echo "💵 Bedrockコスト（環境別内訳・推定）"
+TOTAL_INV=$((TOTAL_MAIN + TOTAL_KAG))
+if [ "$TOTAL_INV" -gt 0 ]; then
+  MAIN_PCT=$((TOTAL_MAIN * 100 / TOTAL_INV))
+  KAG_PCT=$((TOTAL_KAG * 100 / TOTAL_INV))
+  MAIN_COST=$(printf "%.2f" $(echo "$TOTAL_COST * $TOTAL_MAIN / $TOTAL_INV" | bc -l))
+  KAG_COST=$(printf "%.2f" $(echo "$TOTAL_COST * $TOTAL_KAG / $TOTAL_INV" | bc -l))
+  MAIN_MONTHLY=$(printf "%.0f" $(echo "$MAIN_COST * 4" | bc -l))
+  KAG_MONTHLY=$(printf "%.0f" $(echo "$KAG_COST * 4" | bc -l))
+  TOTAL_WEEKLY=$(printf "%.2f" $(echo "$TOTAL_COST" | bc -l))
+  TOTAL_MONTHLY=$(printf "%.0f" $(echo "$TOTAL_COST * 4" | bc -l))
+  echo "  main: 週間 \$$MAIN_COST → 月間推定 \$$MAIN_MONTHLY ($MAIN_PCT%)"
+  echo "  kag:  週間 \$$KAG_COST → 月間推定 \$$KAG_MONTHLY ($KAG_PCT%)"
+  echo "  合計: 週間 \$$TOTAL_WEEKLY → 月間推定 \$$TOTAL_MONTHLY"
+else
+  echo "  invocation数が0のため計算できません"
+fi
+echo ""
+echo "✅ 完了！"
 ```
-
-### 5. Bedrockコスト（main/kag内訳・推定）
-
-Bedrockコストは環境別に分かれていないため、invocation数の割合で按分して推定する。
-
-**計算方法**:
-1. 手順2で取得した週間invocation数の合計を算出（main合計、kag合計）
-2. 手順4で取得した週間Bedrockコスト合計を算出
-3. 各環境のコストを按分計算:
-   - main推定コスト = 週間コスト × (main invocation数 / 合計invocation数)
-   - kag推定コスト = 週間コスト × (kag invocation数 / 合計invocation数)
 
 ## 出力フォーマット
 
-結果は以下の形式でまとめること：
+スクリプト実行後、以下の情報が出力される：
 
-1. **Cognitoユーザー数**: 環境ごとのユーザー数テーブル
-2. **日次invocation数**: 過去7日間の日別テーブル（main/kag別、簡易グラフ付き）
-3. **時間別invocation数**: 直近24時間のJST表示テーブル（簡易グラフ付き）
-4. **Bedrockコスト（日別）**: 過去7日間の日別コストテーブル（簡易グラフ付き）
+1. **Cognitoユーザー数**: 環境ごとのユーザー数
+2. **日次invocation数**: 過去7日間の日別回数（main/kag別）
+3. **時間別invocation数**: 直近24時間の上位5時間帯
+4. **Bedrockコスト（日別）**: 過去7日間の日別コスト
 5. **Bedrockコスト（環境別内訳）**: invocation数で按分した推定コスト（週間・月間）
+
+## 注意事項
+
+- AWS認証が切れている場合は `aws login` を先に実行すること
+- CloudWatch Logsクエリは非同期のため8秒待機している（必要に応じて調整）
