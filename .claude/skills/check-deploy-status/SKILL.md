@@ -1,41 +1,31 @@
 ---
 name: check-deploy-status
-description: Amplifyのmain/kagブランチのデプロイ状況を確認（直近5件ずつ、所要時間付き）
+description: Amplifyに存在するすべてのブランチのデプロイ状況を確認（直近5件ずつ、所要時間付き）
 allowed-tools: Bash(aws:*)
 ---
 
 # Amplify デプロイ状況チェック
 
-main と kag ブランチのデプロイ状況を確認し、表形式で出力する。
+存在するすべてのブランチのデプロイ状況を確認し、表形式で出力する。
 
 ## 対象アプリ
 
 - アプリ名: `marp-agent`
 - リージョン: `us-east-1`
-- 対象ブランチ: `main`, `kag`
+- 対象ブランチ: **すべてのブランチ**（動的に取得）
 
 ## 調査手順
 
-### 1. アプリIDの取得
+以下の1コマンドですべてのブランチのデプロイ状況を取得する:
 
 ```bash
-APP_ID=$(aws amplify list-apps --region us-east-1 \
-  --query "apps[?name=='marp-agent'].appId" --output text)
-echo "App ID: $APP_ID"
-```
-
-### 2. 各ブランチのデプロイジョブを取得（直近5件）
-
-```bash
-# main ブランチ
-aws amplify list-jobs --app-id "$APP_ID" --branch-name main --max-items 5 --region us-east-1 \
-  --query "jobSummaries[].{jobId:jobId, status:status, commitMessage:commitMessage, startTime:startTime, endTime:endTime}" \
-  --output json
-
-# kag ブランチ
-aws amplify list-jobs --app-id "$APP_ID" --branch-name kag --max-items 5 --region us-east-1 \
-  --query "jobSummaries[].{jobId:jobId, status:status, commitMessage:commitMessage, startTime:startTime, endTime:endTime}" \
-  --output json
+APP_ID=$(aws amplify list-apps --region us-east-1 --query "apps[?name=='marp-agent'].appId" --output text) && \
+aws amplify list-branches --app-id "$APP_ID" --region us-east-1 --query "branches[].branchName" --output text | tr '\t' '\n' | while read BRANCH; do \
+  echo "=== $BRANCH ===" && \
+  aws amplify list-jobs --app-id "$APP_ID" --branch-name "$BRANCH" --max-items 5 --region us-east-1 \
+    --query "jobSummaries[].{jobId:jobId, status:status, commitMessage:commitMessage, startTime:startTime, endTime:endTime}" \
+    --output json; \
+done
 ```
 
 ## 出力フォーマット
@@ -60,6 +50,8 @@ aws amplify list-jobs --app-id "$APP_ID" --branch-name kag --max-items 5 --regio
 
 ### 出力テーブル例
 
+取得したすべてのブランチについて、以下の形式で出力:
+
 ```
 📦 main ブランチ（直近5件）
 ┌────┬──────────┬────────────────────────────┬───────────┐
@@ -72,6 +64,11 @@ aws amplify list-jobs --app-id "$APP_ID" --branch-name kag --max-items 5 --regio
 
 📦 kag ブランチ（直近5件）
 （同様の形式）
+
+📦 feature/xxx ブランチ（直近5件）
+（同様の形式）
+
+... 以下、存在するブランチすべてを出力
 ```
 
 ### コミットメッセージの省略
