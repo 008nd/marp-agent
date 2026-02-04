@@ -45,17 +45,16 @@ def _get_model_config(model_type: str = "claude") -> dict:
 
 
 # Tavilyクライアント初期化（複数キーでフォールバック対応）
+OPENAI_DEFAULT_MODEL = "gpt-5.2"
 OPENAI_MODEL_MAP = {
-    "standard": "gpt-5.2",
-    "fast": "gpt-5-mini",
-    "reasoning": "gpt-5.2-pro",
+    "standard": OPENAI_DEFAULT_MODEL,
 }
 
 
 def resolve_model(model_type: str) -> str:
     if not model_type:
         return OPENAI_DEFAULT_MODEL
-    return OPENAI_MODEL_MAP.get(model_type, model_type)
+    return OPENAI_MODEL_MAP.get(model_type, OPENAI_DEFAULT_MODEL)
 
 
 def _get_float_env(name: str, default: float) -> float:
