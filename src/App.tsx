@@ -28,6 +28,22 @@ const authComponents = {
       </div>
     );
   },
+  SignIn: {
+    Footer() {
+      return null;
+    },
+  },
+  SignUp: {
+    Header() {
+      return null;
+    },
+    FormFields() {
+      return null;
+    },
+    Footer() {
+      return null;
+    },
+  },
 };
 
 function App() {
@@ -37,7 +53,7 @@ function App() {
   }
 
   return (
-    <Authenticator components={authComponents}>
+    <Authenticator components={authComponents} hideSignUp initialState="signIn">
       {({ signOut }) => <MainApp signOut={signOut} />}
     </Authenticator>
   );
