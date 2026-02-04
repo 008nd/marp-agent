@@ -2,8 +2,6 @@ import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { invokeAgent, invokeAgentMock } from '../hooks/useAgentCore';
 
-type ModelType = 'standard' | 'fast' | 'reasoning';
-
 interface Message {
   role: 'user' | 'assistant';
   content: string;
@@ -71,7 +69,6 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
-  const [modelType, setModelType] = useState<ModelType>('standard');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
   const tipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -238,7 +235,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
               })
             );
           },
-        }, sessionId, modelType);
+        }, sessionId);
       } catch (error) {
         console.error('Error:', error);
       } finally {
@@ -247,7 +244,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
     };
 
     sendShareRequest();
-  }, [sharePromptTrigger, modelType]);
+  }, [sharePromptTrigger]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -471,7 +468,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             )
           );
         },
-      }, sessionId, modelType);
+      }, sessionId);
 
       // ストリーミング完了
       setMessages(prev =>
@@ -630,25 +627,8 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       {/* 入力フォーム */}
       <form onSubmit={handleSubmit} className="border-t px-6 py-4">
         <div className="max-w-3xl mx-auto flex gap-2">
-          {/* 入力欄（左端にモデルセレクター内蔵） */}
+          {/* 入力欄 */}
           <div className="flex-1 flex items-center border border-gray-200 rounded-lg bg-gray-50 focus-within:ring-2 focus-within:ring-[#5ba4d9] focus-within:border-transparent">
-            <div className="hidden">
-              {/* PC: モデル名表示、スマホ: 矢印のみ */}
-              <span className={`text-xl sm:ml-1 mr-2 ${messages.some(m => m.role === 'user') ? 'text-gray-300' : 'text-gray-600'}`}>▾</span>
-              {/* 透明なselectを上に重ねてタップ領域を確保 */}
-              <select
-                value={modelType}
-                onChange={(e) => setModelType(e.target.value as ModelType)}
-                disabled={isLoading || messages.some(m => m.role === 'user')}
-                className="absolute inset-0 opacity-0 cursor-pointer"
-                title={messages.some(m => m.role === 'user') ? '会話中はモデルを変更できません' : '使用するAIモデルを選択'}
-              >
-                <option value="standard">標準（OpenAI）</option>
-                <option value="fast">高速（OpenAI）</option>
-                <option value="reasoning">高精度（OpenAI）</option>
-              </select>
-            </div>
-            <div className="hidden" />
             <input
               ref={inputRef}
               type="text"
