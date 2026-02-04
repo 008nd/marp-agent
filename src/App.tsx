@@ -23,40 +23,8 @@ const authComponents = {
     return (
       <div className="text-center py-4">
         <h1 className="text-2xl font-bold text-white">
-          パワポ作るマン　by みのるん
+          Marpでパワポ作成エージェント
         </h1>
-        <p className="text-sm text-white/80 mt-1">
-          誰でもアカウントを作って利用できます！<br/>
-          （1日50名超えるとエラー）
-        </p>
-      </div>
-    );
-  },
-  Footer() {
-    return (
-      <div className="text-center py-3 px-4">
-        <p className="text-xs text-white/70 leading-relaxed">
-          登録されたメールアドレスは認証目的でのみ使用します。
-        </p>
-        <p className="text-xs text-white/70 mt-2">
-          <a
-            href="https://github.com/minorun365/marp-agent"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:text-white transition-colors"
-          >
-            GitHub
-          </a>
-          {' / '}
-          <a
-            href="https://x.com/minorun365"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:text-white transition-colors"
-          >
-            X
-          </a>
-        </p>
       </div>
     );
   },
