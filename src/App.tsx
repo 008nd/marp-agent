@@ -49,7 +49,6 @@ function MainApp({ signOut }: { signOut?: () => void }) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [editPromptTrigger, setEditPromptTrigger] = useState(0);
   const [sharePromptTrigger, setSharePromptTrigger] = useState(0);
-  const [hasShownSharePrompt, setHasShownSharePrompt] = useState(false);
   const chatInputRef = useRef<HTMLInputElement>(null);
   // セッションID（画面更新まで同じIDを使用して会話履歴を保持）
   const [sessionId] = useState(() => crypto.randomUUID());
@@ -106,10 +105,6 @@ function MainApp({ signOut }: { signOut?: () => void }) {
 
       // チャット画面に遷移（初回のみシェアトリガーを発火）
       setActiveTab('chat');
-      if (!hasShownSharePrompt) {
-        setSharePromptTrigger(prev => prev + 1);
-        setHasShownSharePrompt(true);
-      }
     } catch (error) {
       console.error('Download error:', error);
       alert(`ダウンロードに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}`);
@@ -144,10 +139,6 @@ function MainApp({ signOut }: { signOut?: () => void }) {
       }
 
       setActiveTab('chat');
-      if (!hasShownSharePrompt) {
-        setSharePromptTrigger(prev => prev + 1);
-        setHasShownSharePrompt(true);
-      }
     } catch (error) {
       console.error('Download error:', error);
       alert(`PPTXダウンロードに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}`);
