@@ -865,8 +865,8 @@ async def invoke(payload, context=None):
             print(traceback.format_exc())
             yield {"type": "error", "message": str(e)}
             return
-
-　　    try:
+            
+        try:
             for chunk in stream:
                 if not getattr(chunk, "choices", None):
                     continue
