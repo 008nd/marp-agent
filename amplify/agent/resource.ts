@@ -75,6 +75,12 @@ export function createMarpAgent({ stack, userPool, userPoolClient, nameSuffix, s
     agentRuntimeArtifact,
     authorizerConfiguration: authConfig,
     environmentVariables: {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+      OPENAI_MODEL: process.env.OPENAI_MODEL || '',
+      OPENAI_MODEL_FAST: process.env.OPENAI_MODEL_FAST || '',
+      OPENAI_MODEL_REASONING: process.env.OPENAI_MODEL_REASONING || '',
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+      OPENAI_TEMPERATURE: process.env.OPENAI_TEMPERATURE || '',
       TAVILY_API_KEY: process.env.TAVILY_API_KEY || '',
       TAVILY_API_KEY2: process.env.TAVILY_API_KEY2 || '',
       TAVILY_API_KEY3: process.env.TAVILY_API_KEY3 || '',
@@ -95,17 +101,6 @@ export function createMarpAgent({ stack, userPool, userPoolClient, nameSuffix, s
   }
 
   // Bedrockモデル呼び出し権限を付与
-  runtime.addToRolePolicy(new iam.PolicyStatement({
-    actions: [
-      'bedrock:InvokeModel',
-      'bedrock:InvokeModelWithResponseStream',
-    ],
-    resources: [
-      'arn:aws:bedrock:*::foundation-model/*',
-      'arn:aws:bedrock:*:*:inference-profile/*',
-    ],
-  }));
-
   // 共有スライド用S3への書き込み権限を付与
   if (sharedSlidesBucket) {
     runtime.addToRolePolicy(new iam.PolicyStatement({
