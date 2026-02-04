@@ -16,9 +16,9 @@ interface Message {
 // スライド生成中に表示する豆知識
 const TIPS = [
   'このアプリはOpenAI APIでスライドを生成します。',
-  'モデルは「標準 / 高速 / 高精度」を切り替えられます。',
+  '元のアプリはBedrockからClaudeを呼び出すものでしたが、OpenAI APIに作り変えました。',
   'このアプリはサーバーレス構成なので維持費が安いです。',
-  'このアプリ開発者のみのるんのXアカウントは @minorun365 です。',
+  '元となったアプリの開発者はみのるん（Xアカウント @minorun365） です。',
 ];
 
 interface ChatProps {
@@ -632,11 +632,8 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
         <div className="max-w-3xl mx-auto flex gap-2">
           {/* 入力欄（左端にモデルセレクター内蔵） */}
           <div className="flex-1 flex items-center border border-gray-200 rounded-lg bg-gray-50 focus-within:ring-2 focus-within:ring-[#5ba4d9] focus-within:border-transparent">
-            <div className="relative flex items-center pl-3 sm:pl-4">
+            <div className="hidden">
               {/* PC: モデル名表示、スマホ: 矢印のみ */}
-              <span className={`hidden sm:inline text-xs ${messages.some(m => m.role === 'user') ? 'text-gray-300' : 'text-gray-600'}`}>
-                {modelType === 'standard' ? 'OpenAI' : modelType === 'fast' ? 'OpenAI Fast' : 'OpenAI Pro'}
-              </span>
               <span className={`text-xl sm:ml-1 mr-2 ${messages.some(m => m.role === 'user') ? 'text-gray-300' : 'text-gray-600'}`}>▾</span>
               {/* 透明なselectを上に重ねてタップ領域を確保 */}
               <select
@@ -651,7 +648,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
                 <option value="reasoning">高精度（OpenAI）</option>
               </select>
             </div>
-            <div className="w-px h-5 bg-gray-200 mx-1" />
+            <div className="hidden" />
             <input
               ref={inputRef}
               type="text"
