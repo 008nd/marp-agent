@@ -45,11 +45,11 @@ def _get_model_config(model_type: str = "claude") -> dict:
 
 
 # Tavilyクライアント初期化（複数キーでフォールバック対応）
-OPENAI_DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+OPENAI_DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 OPENAI_MODEL_MAP = {
     "standard": os.environ.get("OPENAI_MODEL_STANDARD", OPENAI_DEFAULT_MODEL),
-    "fast": os.environ.get("OPENAI_MODEL_FAST", os.environ.get("OPENAI_MODEL_MINI", "gpt-4o-mini")),
-    "reasoning": os.environ.get("OPENAI_MODEL_REASONING", OPENAI_DEFAULT_MODEL),
+    "fast": os.environ.get("OPENAI_MODEL_FAST", os.environ.get("OPENAI_MODEL_MINI", "gpt-5-mini")),
+    "reasoning": os.environ.get("OPENAI_MODEL_REASONING", "gpt-5.2-pro"),
 }
 
 
