@@ -45,11 +45,10 @@ def _get_model_config(model_type: str = "claude") -> dict:
 
 
 # Tavilyクライアント初期化（複数キーでフォールバック対応）
-OPENAI_DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 OPENAI_MODEL_MAP = {
-    "standard": os.environ.get("OPENAI_MODEL_STANDARD", OPENAI_DEFAULT_MODEL),
-    "fast": os.environ.get("OPENAI_MODEL_FAST", os.environ.get("OPENAI_MODEL_MINI", "gpt-5-mini")),
-    "reasoning": os.environ.get("OPENAI_MODEL_REASONING", "gpt-5.2-pro"),
+    "standard": "gpt-5.2",
+    "fast": "gpt-5-mini",
+    "reasoning": "gpt-5.2-pro",
 }
 
 
@@ -80,17 +79,18 @@ def get_openai_client() -> OpenAI:
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
-        base_url = os.environ.get("OPENAI_BASE_URL")
+        base_url = os.environ.get("OPENAI_BASE_URL") or None
+        if base_url and not base_url.startswith(("http://", "https://")):
+            print("[WARN] OPENAI_BASE_URL missing scheme, prefixing https://", flush=True)
+            base_url = f"https://{base_url}"
+        if not base_url:
+            base_url = "https://api.openai.com/v1"
         print(
-            f"[INFO] OpenAI env: api_key_len={len(api_key)} base_url={'set' if base_url else 'default'}",
+            f"[INFO] OpenAI env: api_key_len={len(api_key)} base_url={base_url}",
             flush=True,
         )
-        if base_url:
-            _openai_client = OpenAI(api_key=api_key, base_url=base_url)
-            print(f"[INFO] OpenAI client initialized with custom base_url: {base_url}", flush=True)
-        else:
-            _openai_client = OpenAI(api_key=api_key)
-            print("[INFO] OpenAI client initialized with default base_url", flush=True)
+        _openai_client = OpenAI(api_key=api_key, base_url=base_url)
+        print(f"[INFO] OpenAI client initialized with base_url: {base_url}", flush=True)
     return _openai_client
 
 
