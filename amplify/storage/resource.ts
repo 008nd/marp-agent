@@ -20,7 +20,7 @@ export class SharedSlidesConstruct extends Construct {
   constructor(scope: Construct, id: string, props: SharedSlidesConstructProps) {
     super(scope, id);
 
-    const { nameSuffix } = props;
+    const { nameSuffix } = oya;
 
     // S3バケット
     // - パブリックアクセスブロック有効（CloudFront経由のみアクセス可能）
