@@ -81,12 +81,16 @@ def get_openai_client() -> OpenAI:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
         base_url = os.environ.get("OPENAI_BASE_URL")
+        print(
+            f"[INFO] OpenAI env: api_key_len={len(api_key)} base_url={'set' if base_url else 'default'}",
+            flush=True,
+        )
         if base_url:
             _openai_client = OpenAI(api_key=api_key, base_url=base_url)
-            print(f"[INFO] OpenAI client initialized with custom base_url: {base_url}")
+            print(f"[INFO] OpenAI client initialized with custom base_url: {base_url}", flush=True)
         else:
             _openai_client = OpenAI(api_key=api_key)
-            print("[INFO] OpenAI client initialized with default base_url")
+            print("[INFO] OpenAI client initialized with default base_url", flush=True)
     return _openai_client
 
 
@@ -791,6 +795,10 @@ async def invoke(payload, context=None):
     session_id = getattr(context, 'session_id', None) if context else None
 
     theme = payload.get("theme", "gradient")
+    print(
+        f"[INFO] Invoke received: action={action} model_type={model_type} session_id={session_id}",
+        flush=True,
+    )
 
     if action == "export_pdf" and current_markdown:
         # PDF出力
@@ -860,9 +868,10 @@ async def invoke(payload, context=None):
                 "[ERROR] OpenAI request failed:"
                 f" model={model_name} session_id={session_id} action={action}"
                 f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
-                f" error={type(e).__name__}: {e}"
+                f" error={type(e).__name__}: {e}",
+                flush=True,
             )
-            print(traceback.format_exc())
+            print(traceback.format_exc(), flush=True)
             yield {"type": "error", "message": str(e)}
             return
             
@@ -893,9 +902,10 @@ async def invoke(payload, context=None):
                 "[ERROR] OpenAI stream failed:"
                 f" model={model_name} session_id={session_id} action={action}"
                 f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
-                f" error={type(e).__name__}: {e}"
+                f" error={type(e).__name__}: {e}",
+                flush=True,
             )
-            print(traceback.format_exc())
+            print(traceback.format_exc(), flush=True)
             yield {"type": "error", "message": str(e)}
             return
 
