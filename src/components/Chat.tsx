@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { invokeAgent, invokeAgentMock } from '../hooks/useAgentCore';
 
-type ModelType = 'claude' | 'kimi' | 'claude5';
+type ModelType = 'standard' | 'fast' | 'reasoning';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -15,16 +15,10 @@ interface Message {
 
 // スライド生成中に表示する豆知識
 const TIPS = [
-  'このアプリのベースは、みのるんがClaude Codeと一緒に一晩で開発しました！',
-  'このアプリはAWSのBedrock AgentCoreとAmplify Gen2でフルサーバーレス構築されています。',
-  'このアプリの裏では、Strands Agentsフレームワークで構築されたAIエージェントが稼働しています。',
-  'このアプリはサーバーレス構成なので維持費が激安！かかる費用はほぼ推論時のAPI料金のみです。',
-  'このアプリのLLMには、Amazon BedrockのClaude Sonnet 4.5を利用しています。',
-  'このアプリはOSSとして、GitHub上でコードと構築方法を公開しています！',
-  'みのるんのQiitaブログで、このアプリと似た構成をAWS CDKで構築する手順も紹介しています！',
-  'このアプリへの感想や要望は、Xで #パワポ作るマン のハッシュタグを付けてフィードバックください！',
-  'このアプリ開発者のみのるんのXアカウントは @minorun365 です。フォローしてね！',
-  'Kimi K2 Thinkingモデルを選ぶと、利用コストがとても安くなるためみのるんが喜びます！',
+  'このアプリはOpenAI APIでスライドを生成します。',
+  'モデルは「標準 / 高速 / 高精度」を切り替えられます。',
+  'このアプリはサーバーレス構成なので維持費が安いです。',
+  'このアプリ開発者のみのるんのXアカウントは @minorun365 です。',
 ];
 
 interface ChatProps {
@@ -47,7 +41,7 @@ const MESSAGES = {
   EMPTY_STATE_TITLE: 'スライドを作成しましょう',
   EMPTY_STATE_EXAMPLE: '例: 「AWS入門の5枚スライドを作って」',
   ERROR: 'エラーが発生しました。もう一度お試しください。',
-  ERROR_MODEL_NOT_AVAILABLE: 'Claude Sonnet 5はまだリリースされていないようです。Amazon Bedrockへのモデル追加をお待ちください！（ブラウザでページ更新すると、別のモデルを選んで新規チャットができます）',
+  ERROR_MODEL_NOT_AVAILABLE: '指定したOpenAIモデルが利用できません。モデル名と権限を確認してください。',
 
   // ステータス - スライド生成
   SLIDE_GENERATING_PREFIX: 'スライドを作成中...',
@@ -77,7 +71,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
-  const [modelType, setModelType] = useState<ModelType>('claude');
+  const [modelType, setModelType] = useState<ModelType>('standard');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
   const tipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -425,7 +419,11 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
           console.error('Agent error:', error);
           // モデルが未リリースの場合は専用メッセージを表示
           const errorMessage = error instanceof Error ? error.message : String(error);
-          const isModelNotAvailable = errorMessage.includes('model identifier is invalid');
+          const isModelNotAvailable =
+            /model/i.test(errorMessage) &&
+            (errorMessage.includes('not found') ||
+              errorMessage.includes('model_not_found') ||
+              errorMessage.includes('does not exist'));
           const displayMessage = isModelNotAvailable ? MESSAGES.ERROR_MODEL_NOT_AVAILABLE : MESSAGES.ERROR;
 
           // 疑似ストリーミングでエラーメッセージを表示
@@ -487,7 +485,11 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       console.error('Error:', error);
       // モデルが未リリースの場合は専用メッセージを表示
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const isModelNotAvailable = errorMessage.includes('model identifier is invalid');
+      const isModelNotAvailable =
+        /model/i.test(errorMessage) &&
+        (errorMessage.includes('not found') ||
+          errorMessage.includes('model_not_found') ||
+          errorMessage.includes('does not exist'));
       const displayMessage = isModelNotAvailable ? MESSAGES.ERROR_MODEL_NOT_AVAILABLE : MESSAGES.ERROR;
 
       // ステータスメッセージを削除し、エラーメッセージを表示
@@ -537,7 +539,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       <div className="flex-1 overflow-y-auto px-6 py-4">
         <div className="max-w-3xl mx-auto space-y-4">
         {/* <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-blue-700 text-sm">
-          ⚠️ オプションのKimiモデルは現在、試験運用中です。まだ若干、動作が不安定なためご注意ください。
+          ⚠️ 高速モデルは出力が簡略化される場合があります。
         </div> */}
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-8">
@@ -633,7 +635,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             <div className="relative flex items-center pl-3 sm:pl-4">
               {/* PC: モデル名表示、スマホ: 矢印のみ */}
               <span className={`hidden sm:inline text-xs ${messages.some(m => m.role === 'user') ? 'text-gray-300' : 'text-gray-600'}`}>
-                {modelType === 'claude' ? 'Claude' : modelType === 'kimi' ? 'Kimi' : 'Claude 5'}
+                {modelType === 'standard' ? 'OpenAI' : modelType === 'fast' ? 'OpenAI Fast' : 'OpenAI Pro'}
               </span>
               <span className={`text-xl sm:ml-1 mr-2 ${messages.some(m => m.role === 'user') ? 'text-gray-300' : 'text-gray-600'}`}>▾</span>
               {/* 透明なselectを上に重ねてタップ領域を確保 */}
@@ -644,9 +646,9 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
                 className="absolute inset-0 opacity-0 cursor-pointer"
                 title={messages.some(m => m.role === 'user') ? '会話中はモデルを変更できません' : '使用するAIモデルを選択'}
               >
-                <option value="claude">標準（Claude Sonnet 4.5）</option>
-                <option value="claude5">宇宙最速（Claude Sonnet 5）</option>
-                <option value="kimi">サステナブル（Kimi K2 Thinking）</option>
+                <option value="standard">標準（OpenAI）</option>
+                <option value="fast">高速（OpenAI）</option>
+                <option value="reasoning">高精度（OpenAI）</option>
               </select>
             </div>
             <div className="w-px h-5 bg-gray-200 mx-1" />
