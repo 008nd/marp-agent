@@ -20,13 +20,13 @@ export class SharedSlidesConstruct extends Construct {
   constructor(scope: Construct, id: string, props: SharedSlidesConstructProps) {
     super(scope, id);
 
-    const { nameSuffix } = oya;
+    const { nameSuffix } = props;
 
     // S3バケット
     // - パブリックアクセスブロック有効（CloudFront経由のみアクセス可能）
     // - 7日後に自動削除（Lifecycle Rule）
     this.bucket = new s3.Bucket(this, 'Bucket', {
-      bucketName: `marp-shared-slides-${nameSuffix}`,
+      bucketName: `marp-shared-slides-008nd-${nameSuffix}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
