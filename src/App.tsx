@@ -48,7 +48,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
   const [markdown, setMarkdown] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
   const [editPromptTrigger, setEditPromptTrigger] = useState(0);
-  const [sharePromptTrigger, setSharePromptTrigger] = useState(0);
+  const [sharePromptTrigger] = useState(0);
   const chatInputRef = useRef<HTMLInputElement>(null);
   // セッションID（画面更新まで同じIDを使用して会話履歴を保持）
   const [sessionId] = useState(() => crypto.randomUUID());
