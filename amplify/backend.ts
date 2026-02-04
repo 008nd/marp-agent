@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { defineBackend } from '@aws-amplify/backend';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { auth } from './auth/resource';
 import { createMarpAgent } from './agent/resource';
 import { SharedSlidesConstruct } from './storage/resource';
-
 // 環境判定
 // - Sandbox: AWS_BRANCHが未定義
 // - 本番/ステージング: AWS_BRANCHにブランチ名が設定される
@@ -12,6 +12,11 @@ const isSandbox = !process.env.AWS_BRANCH;
 const backend = defineBackend({
   auth,
 });
+// セルフサインアップを無効化（管理者作成のみ）
+const cfnUserPool = backend.auth.resources.userPool.node.defaultChild as cognito.CfnUserPool;
+cfnUserPool.adminCreateUserConfig = {
+  allowAdminCreateUserOnly: true,
+};
 
 // AgentCoreスタックを作成
 const agentCoreStack = backend.createStack('AgentCoreStack');
