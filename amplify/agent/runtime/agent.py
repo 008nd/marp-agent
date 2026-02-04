@@ -10,7 +10,8 @@ from pathlib import Path
 import boto3
 
 from bedrock_agentcore import BedrockAgentCoreApp
-from strands import Agent, tool
+from openai import OpenAI
+from strands import Agent
 from strands.models import BedrockModel
 from tavily import TavilyClient
 
@@ -44,6 +45,49 @@ def _get_model_config(model_type: str = "claude") -> dict:
 
 
 # Tavilyクライアント初期化（複数キーでフォールバック対応）
+OPENAI_DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL_MAP = {
+    "standard": os.environ.get("OPENAI_MODEL_STANDARD", OPENAI_DEFAULT_MODEL),
+    "fast": os.environ.get("OPENAI_MODEL_FAST", os.environ.get("OPENAI_MODEL_MINI", "gpt-4o-mini")),
+    "reasoning": os.environ.get("OPENAI_MODEL_REASONING", OPENAI_DEFAULT_MODEL),
+}
+
+
+def resolve_model(model_type: str) -> str:
+    if not model_type:
+        return OPENAI_DEFAULT_MODEL
+    return OPENAI_MODEL_MAP.get(model_type, model_type)
+
+
+def _get_float_env(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+OPENAI_TEMPERATURE = _get_float_env("OPENAI_TEMPERATURE", 0.4)
+
+_openai_client: OpenAI | None = None
+
+
+def get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if base_url:
+            _openai_client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
+
+
 _tavily_clients: list[TavilyClient] = []
 for _key_name in ["TAVILY_API_KEY", "TAVILY_API_KEY2", "TAVILY_API_KEY3"]:
     _key = os.environ.get(_key_name, "")
@@ -51,7 +95,6 @@ for _key_name in ["TAVILY_API_KEY", "TAVILY_API_KEY2", "TAVILY_API_KEY3"]:
         _tavily_clients.append(TavilyClient(api_key=_key))
 
 
-@tool
 def web_search(query: str) -> str:
     """Web検索を実行して最新情報を取得します。スライド作成に必要な情報を調べる際に使用してください。
 
@@ -106,8 +149,60 @@ _generated_tweet_url: str | None = None
 # Web検索結果用のグローバル変数（フォールバック用）
 _last_search_result: str | None = None
 
+OPENAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for up-to-date information and return a concise summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "output_slide",
+            "description": "Provide the final Marp markdown for the slide deck.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "markdown": {"type": "string", "description": "Marp markdown"},
+                },
+                "required": ["markdown"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_tweet_url",
+            "description": "Generate a tweet intent URL from the given text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tweet_text": {"type": "string", "description": "Tweet content (<= 100 chars)"},
+                },
+                "required": ["tweet_text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
 
-@tool
+MAX_TOOL_ITERATIONS = int(os.environ.get("OPENAI_MAX_TOOL_ITERATIONS", "5"))
+MAX_SESSION_MESSAGES = int(os.environ.get("OPENAI_MAX_SESSION_MESSAGES", "40"))
+
+_session_messages: dict[str, list[dict]] = {}
+
+
 def generate_tweet_url(tweet_text: str) -> str:
     """ツイート投稿用のURLを生成します。ユーザーがXでシェアしたい場合に使用してください。
 
@@ -127,7 +222,6 @@ def generate_tweet_url(tweet_text: str) -> str:
     return "ツイートURLを生成しました。"
 
 
-@tool
 def output_slide(markdown: str) -> str:
     """生成したスライドのマークダウンを出力します。スライドを作成・編集したら必ずこのツールを使って出力してください。
 
@@ -140,6 +234,65 @@ def output_slide(markdown: str) -> str:
     global _generated_markdown
     _generated_markdown = markdown
     return "スライドを出力しました。"
+
+def _get_session_key(session_id: str | None, model_type: str) -> str | None:
+    if not session_id:
+        return None
+    return f"{session_id}:{model_type}"
+
+
+def _trim_session_messages(messages: list[dict]) -> list[dict]:
+    if len(messages) <= MAX_SESSION_MESSAGES:
+        return messages
+    if messages and messages[0].get("role") == "system":
+        return [messages[0]] + messages[-(MAX_SESSION_MESSAGES - 1):]
+    return messages[-MAX_SESSION_MESSAGES:]
+
+
+def _get_session_messages(session_id: str | None, model_type: str) -> list[dict]:
+    session_key = _get_session_key(session_id, model_type)
+    if not session_key:
+        return [{"role": "system", "content": SYSTEM_PROMPT}]
+    if session_key not in _session_messages:
+        _session_messages[session_key] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    return _session_messages[session_key]
+
+
+def _store_session_messages(session_id: str | None, model_type: str, messages: list[dict]) -> None:
+    session_key = _get_session_key(session_id, model_type)
+    if not session_key:
+        return
+    _session_messages[session_key] = _trim_session_messages(messages)
+
+
+def _safe_json_loads(value: str) -> dict:
+    if not value:
+        return {}
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _run_tool(tool_name: str, tool_args: dict) -> str:
+    if tool_name == "web_search":
+        query = tool_args.get("query", "")
+        if not query:
+            return "web_search: query is required"
+        return web_search(query)
+    if tool_name == "output_slide":
+        markdown = tool_args.get("markdown", "")
+        if not markdown:
+            return "output_slide: markdown is required"
+        return output_slide(markdown)
+    if tool_name == "generate_tweet_url":
+        tweet_text = tool_args.get("tweet_text", "")
+        if not tweet_text:
+            return "generate_tweet_url: tweet_text is required"
+        return generate_tweet_url(tweet_text)
+    return f"Unknown tool: {tool_name}"
+
 
 SYSTEM_PROMPT = """あなたは「パワポ作るマン」、プロフェッショナルなスライド作成AIアシスタントです。
 
@@ -634,7 +787,7 @@ async def invoke(payload, context=None):
     user_message = payload.get("prompt", "")
     action = payload.get("action", "chat")  # chat or export_pdf
     current_markdown = payload.get("markdown", "")
-    model_type = payload.get("model_type", "claude")  # claude or kimi
+    model_type = payload.get("model_type", "standard")
     # セッションIDはHTTPヘッダー経由でcontextから取得（スティッキーセッション用）
     session_id = getattr(context, 'session_id', None) if context else None
 
@@ -672,6 +825,128 @@ async def invoke(payload, context=None):
         except Exception as e:
             yield {"type": "error", "message": str(e)}
         return
+
+    # --- OpenAI chat flow ---
+    if current_markdown:
+        user_message = (
+            "Current slide markdown:\n"
+            f"```markdown\n{current_markdown}\n```\n\n"
+            f"User request: {user_message}"
+        )
+
+    model_name = resolve_model(model_type)
+    messages = _get_session_messages(session_id, model_type)
+    messages.append({"role": "user", "content": user_message})
+
+    web_search_executed = False
+    full_text_response = ""
+    tool_iterations = 0
+
+    while tool_iterations < MAX_TOOL_ITERATIONS:
+        tool_iterations += 1
+        tool_calls: dict[int, dict] = {}
+        assistant_text = ""
+
+        try:
+            stream = get_openai_client().chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=OPENAI_TOOLS,
+                tool_choice="auto",
+                temperature=OPENAI_TEMPERATURE,
+                stream=True,
+            )
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+            return
+
+        for chunk in stream:
+            if not getattr(chunk, "choices", None):
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+            if getattr(delta, "content", None):
+                assistant_text += delta.content
+                full_text_response += delta.content
+                yield {"type": "text", "data": delta.content}
+            if getattr(delta, "tool_calls", None):
+                for call in delta.tool_calls:
+                    idx = call.index
+                    entry = tool_calls.get(idx) or {"id": None, "name": "", "arguments": ""}
+                    if getattr(call, "id", None):
+                        entry["id"] = call.id
+                    if getattr(call, "function", None):
+                        if getattr(call.function, "name", None):
+                            entry["name"] = call.function.name
+                        if getattr(call.function, "arguments", None):
+                            entry["arguments"] += call.function.arguments
+                    tool_calls[idx] = entry
+
+        if tool_calls:
+            assistant_message = {
+                "role": "assistant",
+                "content": assistant_text if assistant_text else None,
+                "tool_calls": [],
+            }
+            for entry in tool_calls.values():
+                call_id = entry["id"] or f"call_{uuid.uuid4().hex}"
+                assistant_message["tool_calls"].append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": entry["name"],
+                        "arguments": entry["arguments"] or "{}",
+                    },
+                })
+            messages.append(assistant_message)
+
+            for tool_call in assistant_message["tool_calls"]:
+                tool_name = tool_call["function"]["name"]
+                args = _safe_json_loads(tool_call["function"]["arguments"])
+                if tool_name == "web_search":
+                    web_search_executed = True
+                    query = args.get("query") if isinstance(args, dict) else None
+                    if query:
+                        yield {"type": "tool_use", "data": tool_name, "query": query}
+                    else:
+                        yield {"type": "tool_use", "data": tool_name}
+                else:
+                    yield {"type": "tool_use", "data": tool_name}
+                tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": tool_result,
+                })
+            continue
+
+        messages.append({"role": "assistant", "content": assistant_text})
+        break
+    else:
+        yield {"type": "error", "message": "Tool loop exceeded max iterations"}
+        return
+
+    _store_session_messages(session_id, model_type, messages)
+
+    fallback_markdown = _generated_markdown or extract_marp_markdown_from_text(full_text_response) or extract_markdown(full_text_response)
+    markdown_to_send = _generated_markdown or fallback_markdown
+    if markdown_to_send:
+        if fallback_markdown and not _generated_markdown:
+            print("[INFO] Using fallback markdown (output_slide was not called)")
+        yield {"type": "markdown", "data": markdown_to_send}
+
+    if web_search_executed and not markdown_to_send and _last_search_result:
+        truncated_result = _last_search_result[:500]
+        if len(_last_search_result) > 500:
+            truncated_result += "..."
+        fallback_message = f"Web search result:\n\n{truncated_result}\n\n---\nPlease retry your request."
+        yield {"type": "text", "data": fallback_message}
+
+    if _generated_tweet_url:
+        yield {"type": "tweet_url", "data": _generated_tweet_url}
+
+    yield {"type": "done"}
+    return
 
     # 現在のスライドがある場合はユーザーメッセージに付加
     if current_markdown:
