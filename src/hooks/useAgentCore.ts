@@ -11,14 +11,14 @@ export interface AgentCoreCallbacks {
   onComplete: () => void;
 }
 
-export type ModelType = 'claude' | 'kimi' | 'claude5';
+export type ModelType = 'standard' | 'fast' | 'reasoning';
 
 export async function invokeAgent(
   prompt: string,
   currentMarkdown: string,
   callbacks: AgentCoreCallbacks,
   sessionId?: string,
-  modelType: ModelType = 'claude'
+  modelType: ModelType = 'standard'
 ): Promise<void> {
   const runtimeArn = outputs.custom?.agentRuntimeArn;
   if (!runtimeArn) {
@@ -451,7 +451,7 @@ export async function invokeAgentMock(
   _currentMarkdown: string,
   callbacks: AgentCoreCallbacks,
   _sessionId?: string,
-  _modelType: ModelType = 'claude'
+  _modelType: ModelType = 'standard'
 ): Promise<void> {
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
