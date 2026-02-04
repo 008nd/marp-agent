@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-
+import traceback
 import boto3
 
 from bedrock_agentcore import BedrockAgentCoreApp
@@ -83,8 +83,10 @@ def get_openai_client() -> OpenAI:
         base_url = os.environ.get("OPENAI_BASE_URL")
         if base_url:
             _openai_client = OpenAI(api_key=api_key, base_url=base_url)
+            print(f"[INFO] OpenAI client initialized with custom base_url: {base_url}")
         else:
             _openai_client = OpenAI(api_key=api_key)
+            print("[INFO] OpenAI client initialized with default base_url")
     return _openai_client
 
 
@@ -854,30 +856,48 @@ async def invoke(payload, context=None):
                 stream=True,
             )
         except Exception as e:
+            print(
+                "[ERROR] OpenAI request failed:"
+                f" model={model_name} session_id={session_id} action={action}"
+                f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
+                f" error={type(e).__name__}: {e}"
+            )
+            print(traceback.format_exc())
             yield {"type": "error", "message": str(e)}
             return
 
-        for chunk in stream:
-            if not getattr(chunk, "choices", None):
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
-            if getattr(delta, "content", None):
-                assistant_text += delta.content
-                full_text_response += delta.content
-                yield {"type": "text", "data": delta.content}
-            if getattr(delta, "tool_calls", None):
-                for call in delta.tool_calls:
-                    idx = call.index
-                    entry = tool_calls.get(idx) or {"id": None, "name": "", "arguments": ""}
-                    if getattr(call, "id", None):
-                        entry["id"] = call.id
-                    if getattr(call, "function", None):
-                        if getattr(call.function, "name", None):
-                            entry["name"] = call.function.name
-                        if getattr(call.function, "arguments", None):
-                            entry["arguments"] += call.function.arguments
-                    tool_calls[idx] = entry
+　　    try:
+            for chunk in stream:
+                if not getattr(chunk, "choices", None):
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if getattr(delta, "content", None):
+                    assistant_text += delta.content
+                    full_text_response += delta.content
+                    yield {"type": "text", "data": delta.content}
+                if getattr(delta, "tool_calls", None):
+                    for call in delta.tool_calls:
+                        idx = call.index
+                        entry = tool_calls.get(idx) or {"id": None, "name": "", "arguments": ""}
+                        if getattr(call, "id", None):
+                            entry["id"] = call.id
+                        if getattr(call, "function", None):
+                            if getattr(call.function, "name", None):
+                                entry["name"] = call.function.name
+                            if getattr(call.function, "arguments", None):
+                                entry["arguments"] += call.function.arguments
+                        tool_calls[idx] = entry
+        except Exception as e:
+            print(
+                "[ERROR] OpenAI stream failed:"
+                f" model={model_name} session_id={session_id} action={action}"
+                f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
+                f" error={type(e).__name__}: {e}"
+            )
+            print(traceback.format_exc())
+            yield {"type": "error", "message": str(e)}
+            return
 
         if tool_calls:
             assistant_message = {
@@ -909,7 +929,17 @@ async def invoke(payload, context=None):
                         yield {"type": "tool_use", "data": tool_name}
                 else:
                     yield {"type": "tool_use", "data": tool_name}
-                tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
+                try:
+                    tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
+                except Exception as e:
+                    print(
+                        "[ERROR] Tool execution failed:"
+                        f" tool={tool_name} session_id={session_id} action={action}"
+                        f" error={type(e).__name__}: {e}"
+                    )
+                    print(traceback.format_exc())
+                    yield {"type": "error", "message": str(e)}
+                    return
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
