@@ -4,10 +4,12 @@ import base64
 import os
 import json
 import uuid
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import traceback
 import boto3
+import httpx
 
 from bedrock_agentcore import BedrockAgentCoreApp
 from openai import OpenAI
@@ -69,6 +71,7 @@ def _get_float_env(name: str, default: float) -> float:
 
 OPENAI_TEMPERATURE = _get_float_env("OPENAI_TEMPERATURE", 0.4)
 OPENAI_TIMEOUT_SEC = _get_float_env("OPENAI_TIMEOUT_SEC", 120.0)
+OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
 
 _openai_client: OpenAI | None = None
 
@@ -291,6 +294,22 @@ def _is_web_search_error(result: str) -> bool:
     if "無料枠が枯渇" in result:
         return True
     if "rate limit" in lower or "quota" in lower or "usage limit" in lower or "exceeds your plan" in lower:
+        return True
+    return False
+
+def _is_retryable_openai_error(err: Exception) -> bool:
+    if isinstance(err, (
+        httpx.RemoteProtocolError,
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.PoolTimeout,
+    )):
+        return True
+    message = str(err).lower()
+    if "incomplete chunked read" in message or "peer closed connection" in message:
         return True
     return False
 
@@ -867,69 +886,72 @@ async def invoke(payload, context=None):
         tool_iterations += 1
         tool_calls: dict[int, dict] = {}
         assistant_text = ""
+        had_stream_output = False
 
-        try:
-            print(
-                f"[INFO] OpenAI request start: model={model_name} session_id={session_id} action={action}",
-                flush=True,
-            )
-            stream = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
-                model=model_name,
-                messages=messages,
-                tools=OPENAI_TOOLS,
-                tool_choice="auto",
-                temperature=OPENAI_TEMPERATURE,
-                stream=True,
-            )
-        except Exception as e:
-            print(
-                "[ERROR] OpenAI request failed:"
-                f" model={model_name} session_id={session_id} action={action}"
-                f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
-                f" error={type(e).__name__}: {e}",
-                flush=True,
-            )
-            print(traceback.format_exc(), flush=True)
-            yield {"type": "error", "message": str(e)}
-            return
-            
-        try:
-            for chunk in stream:
-                if not getattr(chunk, "choices", None):
+        attempt = 0
+        while True:
+            try:
+                print(
+                    f"[INFO] OpenAI request start: model={model_name} session_id={session_id} action={action} attempt={attempt + 1}/{OPENAI_MAX_RETRIES + 1}",
+                    flush=True,
+                )
+                stream = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    tools=OPENAI_TOOLS,
+                    tool_choice="auto",
+                    temperature=OPENAI_TEMPERATURE,
+                    stream=True,
+                )
+                for chunk in stream:
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if getattr(delta, "content", None):
+                        assistant_text += delta.content
+                        full_text_response += delta.content
+                        had_stream_output = True
+                        yield {"type": "text", "data": delta.content}
+                    if getattr(delta, "tool_calls", None):
+                        for call in delta.tool_calls:
+                            idx = call.index
+                            entry = tool_calls.get(idx) or {"id": None, "name": "", "arguments": ""}
+                            if getattr(call, "id", None):
+                                entry["id"] = call.id
+                            if getattr(call, "function", None):
+                                if getattr(call.function, "name", None):
+                                    entry["name"] = call.function.name
+                                if getattr(call.function, "arguments", None):
+                                    entry["arguments"] += call.function.arguments
+                            tool_calls[idx] = entry
+                            had_stream_output = True
+                print(
+                    f"[INFO] OpenAI stream finished: model={model_name} session_id={session_id} action={action}",
+                    flush=True,
+                )
+                break
+            except Exception as e:
+                retryable = _is_retryable_openai_error(e)
+                if retryable and attempt < OPENAI_MAX_RETRIES and not had_stream_output:
+                    wait_sec = min(4.0, 1.0 * (2 ** attempt))
+                    print(
+                        f"[WARN] OpenAI stream error (retryable): model={model_name} session_id={session_id} action={action} error={type(e).__name__}: {e}. Retrying in {wait_sec:.1f}s",
+                        flush=True,
+                    )
+                    time.sleep(wait_sec)
+                    attempt += 1
                     continue
-                choice = chunk.choices[0]
-                delta = choice.delta
-                if getattr(delta, "content", None):
-                    assistant_text += delta.content
-                    full_text_response += delta.content
-                    yield {"type": "text", "data": delta.content}
-                if getattr(delta, "tool_calls", None):
-                    for call in delta.tool_calls:
-                        idx = call.index
-                        entry = tool_calls.get(idx) or {"id": None, "name": "", "arguments": ""}
-                        if getattr(call, "id", None):
-                            entry["id"] = call.id
-                        if getattr(call, "function", None):
-                            if getattr(call.function, "name", None):
-                                entry["name"] = call.function.name
-                            if getattr(call.function, "arguments", None):
-                                entry["arguments"] += call.function.arguments
-                        tool_calls[idx] = entry
-            print(
-                f"[INFO] OpenAI stream finished: model={model_name} session_id={session_id} action={action}",
-                flush=True,
-            )
-        except Exception as e:
-            print(
-                "[ERROR] OpenAI stream failed:"
-                f" model={model_name} session_id={session_id} action={action}"
-                f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
-                f" error={type(e).__name__}: {e}",
-                flush=True,
-            )
-            print(traceback.format_exc(), flush=True)
-            yield {"type": "error", "message": str(e)}
-            return
+                print(
+                    "[ERROR] OpenAI stream failed:"
+                    f" model={model_name} session_id={session_id} action={action}"
+                    f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
+                    f" error={type(e).__name__}: {e}",
+                    flush=True,
+                )
+                print(traceback.format_exc(), flush=True)
+                yield {"type": "error", "message": str(e)}
+                return
 
         if tool_calls:
             assistant_message = {
