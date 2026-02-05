@@ -279,6 +279,20 @@ def _safe_json_loads(value: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
+def _is_web_search_error(result: str) -> bool:
+    if not result:
+        return False
+    lower = result.lower()
+    if result.startswith("web_search:"):
+        return True
+    if "検索エラー" in result or "apiキー未設定" in result or "Web検索機能は現在利用できません" in result:
+        return True
+    if "無料枠が枯渇" in result:
+        return True
+    if "rate limit" in lower or "quota" in lower or "usage limit" in lower or "exceeds your plan" in lower:
+        return True
+    return False
+
 
 def _run_tool(tool_name: str, tool_args: dict) -> str:
     if tool_name == "web_search":
@@ -948,6 +962,19 @@ async def invoke(payload, context=None):
                     )
                     print(traceback.format_exc())
                     yield {"type": "error", "message": str(e)}
+                    return
+                if tool_name == "web_search" and _is_web_search_error(tool_result):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": tool_result,
+                    })
+                    error_text = tool_result
+                    print(f"[WARN] Web search error detected, returning to user: {error_text}", flush=True)
+                    messages.append({"role": "assistant", "content": error_text})
+                    _store_session_messages(session_id, model_type, messages)
+                    yield {"type": "text", "data": error_text}
+                    yield {"type": "done"}
                     return
                 messages.append({
                     "role": "tool",
