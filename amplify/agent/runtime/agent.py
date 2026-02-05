@@ -962,21 +962,91 @@ async def invoke(payload, context=None):
         yield {"type": "error", "message": "Tool loop exceeded max iterations"}
         return
 
-    _store_session_messages(session_id, model_type, messages)
-
     fallback_markdown = _generated_markdown or extract_marp_markdown_from_text(full_text_response) or extract_markdown(full_text_response)
     markdown_to_send = _generated_markdown or fallback_markdown
+
+    if web_search_executed and not markdown_to_send and _last_search_result:
+        print("[WARN] Web search executed but no markdown was produced. Forcing output_slide.", flush=True)
+        try:
+            force_messages = messages + [{
+                "role": "system",
+                "content": "You must call output_slide now. Do not call web_search. Output full Marp markdown.",
+            }]
+            force_response = get_openai_client().chat.completions.create(
+                model=model_name,
+                messages=force_messages,
+                tools=OPENAI_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "output_slide"}},
+                temperature=OPENAI_TEMPERATURE,
+            )
+            choice = force_response.choices[0] if getattr(force_response, "choices", None) else None
+            force_message = choice.message if choice else None
+            if force_message:
+                tool_calls = getattr(force_message, "tool_calls", None) or []
+                if tool_calls:
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": force_message.content if getattr(force_message, "content", None) else None,
+                        "tool_calls": [],
+                    }
+                    for call in tool_calls:
+                        call_id = getattr(call, "id", None) or f"call_{uuid.uuid4().hex}"
+                        func = getattr(call, "function", None)
+                        assistant_message["tool_calls"].append({
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": getattr(func, "name", "") if func else "",
+                                "arguments": getattr(func, "arguments", "") if func else "",
+                            },
+                        })
+                    messages.append(assistant_message)
+                    for tool_call in assistant_message["tool_calls"]:
+                        tool_name = tool_call["function"]["name"]
+                        args = _safe_json_loads(tool_call["function"]["arguments"])
+                        yield {"type": "tool_use", "data": tool_name}
+                        try:
+                            tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
+                        except Exception as e:
+                            print(
+                                "[ERROR] Tool execution failed (forced):"
+                                f" tool={tool_name} session_id={session_id} action={action}"
+                                f" error={type(e).__name__}: {e}"
+                            )
+                            print(traceback.format_exc())
+                        else:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": tool_result,
+                            })
+                elif getattr(force_message, "content", None):
+                    extracted = extract_marp_markdown_from_text(force_message.content) or extract_markdown(force_message.content)
+                    if extracted:
+                        _generated_markdown = extracted
+        except Exception as e:
+            print(
+                "[ERROR] OpenAI forced output failed:"
+                f" model={model_name} session_id={session_id} action={action}"
+                f" error={type(e).__name__}: {e}",
+                flush=True,
+            )
+            print(traceback.format_exc(), flush=True)
+
+        markdown_to_send = _generated_markdown or fallback_markdown
+
     if markdown_to_send:
         if fallback_markdown and not _generated_markdown:
             print("[INFO] Using fallback markdown (output_slide was not called)")
         yield {"type": "markdown", "data": markdown_to_send}
-
-    if web_search_executed and not markdown_to_send and _last_search_result:
+    elif web_search_executed and _last_search_result:
         truncated_result = _last_search_result[:500]
         if len(_last_search_result) > 500:
             truncated_result += "..."
-        fallback_message = f"Web search result:\n\n{truncated_result}\n\n---\nPlease retry your request."
+        fallback_message = f"Web検索結果:\n\n{truncated_result}\n\n---\nスライド生成に失敗しました。もう一度お試しください。"
         yield {"type": "text", "data": fallback_message}
+
+    _store_session_messages(session_id, model_type, messages)
 
     if _generated_tweet_url:
         yield {"type": "tweet_url", "data": _generated_tweet_url}
