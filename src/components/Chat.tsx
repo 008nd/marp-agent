@@ -22,7 +22,7 @@ const TIPS = [
 interface ChatProps {
   onMarkdownGenerated: (markdown: string) => void;
   currentMarkdown: string;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   editPromptTrigger?: number;  // 値が変わるたびに修正用メッセージを表示
   sharePromptTrigger?: number;  // 値が変わるたびにシェア用メッセージを自動送信
   sessionId?: string;  // 会話履歴を保持するためのセッションID
@@ -629,13 +629,13 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
         <div className="max-w-3xl mx-auto flex gap-2">
           {/* 入力欄 */}
           <div className="flex-1 flex items-center border border-gray-200 rounded-lg bg-gray-50 focus-within:ring-2 focus-within:ring-[#5ba4d9] focus-within:border-transparent">
-            <input
+            <textarea
               ref={inputRef}
-              type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="例：AgentCoreの入門資料"
-              className="flex-1 bg-transparent px-3 py-2 focus:outline-none placeholder:text-gray-400"
+              placeholder="例：Marpの入門資料つくって"
+              rows={2}
+              className="flex-1 bg-transparent px-3 py-2 focus:outline-none placeholder:text-gray-400 resize-none"
               disabled={isLoading}
             />
           </div>
