@@ -68,6 +68,7 @@ def _get_float_env(name: str, default: float) -> float:
 
 
 OPENAI_TEMPERATURE = _get_float_env("OPENAI_TEMPERATURE", 0.4)
+OPENAI_TIMEOUT_SEC = _get_float_env("OPENAI_TIMEOUT_SEC", 120.0)
 
 _openai_client: OpenAI | None = None
 
@@ -868,7 +869,11 @@ async def invoke(payload, context=None):
         assistant_text = ""
 
         try:
-            stream = get_openai_client().chat.completions.create(
+            print(
+                f"[INFO] OpenAI request start: model={model_name} session_id={session_id} action={action}",
+                flush=True,
+            )
+            stream = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
                 model=model_name,
                 messages=messages,
                 tools=OPENAI_TOOLS,
@@ -910,6 +915,10 @@ async def invoke(payload, context=None):
                             if getattr(call.function, "arguments", None):
                                 entry["arguments"] += call.function.arguments
                         tool_calls[idx] = entry
+            print(
+                f"[INFO] OpenAI stream finished: model={model_name} session_id={session_id} action={action}",
+                flush=True,
+            )
         except Exception as e:
             print(
                 "[ERROR] OpenAI stream failed:"
@@ -999,7 +1008,11 @@ async def invoke(payload, context=None):
                 "role": "system",
                 "content": "You must call output_slide now. Do not call web_search. Output full Marp markdown.",
             }]
-            force_response = get_openai_client().chat.completions.create(
+            print(
+                f"[INFO] OpenAI forced output start: model={model_name} session_id={session_id} action={action}",
+                flush=True,
+            )
+            force_response = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
                 model=model_name,
                 messages=force_messages,
                 tools=OPENAI_TOOLS,
