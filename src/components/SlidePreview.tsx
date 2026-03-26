@@ -5,32 +5,34 @@ import { observe } from '@marp-team/marpit-svg-polyfill';
 import borderTheme from '../themes/border.css?raw';
 import gradientTheme from '../themes/gradient.css?raw';
 import beamTheme from '../themes/beam.css?raw';
+import speeeTheme from '../themes/speee.css?raw';
 
 // テーマ定義
-const THEMES = [
+export const THEMES = [
+  { id: 'speee', name: 'Speee', css: speeeTheme },
   { id: 'border', name: 'Border', css: borderTheme },
   { id: 'gradient', name: 'Gradient', css: gradientTheme },
   { id: 'beam', name: 'Beam', css: beamTheme },
 ] as const;
 
-type ThemeId = typeof THEMES[number]['id'];
+export type ThemeId = typeof THEMES[number]['id'];
 
 interface SlidePreviewProps {
   markdown: string;
+  selectedTheme: ThemeId;
+  onThemeChange: (theme: ThemeId) => void;
   onDownloadPdf: (theme: string) => void;
   onDownloadPptx: (theme: string) => void;
+  onDownloadEditablePptx: (theme: string) => void;
   onShareSlide: (theme: string) => void;
   isDownloading: boolean;
-  isSharing: boolean;
   onRequestEdit?: () => void;
 }
 
-export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareSlide, isDownloading, isSharing: _isSharing, onRequestEdit }: SlidePreviewProps) {
-  void _isSharing; // propsとして受け取るが、このコンポーネントでは使用しない
+export function SlidePreview({ markdown, selectedTheme, onThemeChange, onDownloadPdf, onDownloadPptx, onDownloadEditablePptx, onShareSlide, isDownloading, onRequestEdit }: SlidePreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [selectedTheme, setSelectedTheme] = useState<ThemeId>('gradient');
 
   // Safari/iOS WebKit向けのpolyfillを適用
   useEffect(() => {
@@ -63,25 +65,26 @@ export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareS
   const markdownWithTheme = useMemo(() => {
     if (!markdown) return '';
 
-    // 既存のフロントマターを解析
-    const frontMatterMatch = markdown.match(/^---\n([\s\S]*?)\n---/);
+    let normalized = markdown;
+    normalized = normalized.replace(
+      /<!-- _backgroundColor: #303030 -->\s*<!-- _color: white -->/g,
+      '<!-- _class: lead -->'
+    );
+
+    const frontMatterMatch = normalized.match(/^---\n([\s\S]*?)\n---/);
 
     if (frontMatterMatch) {
-      // 既存のフロントマターにthemeを追加/上書き
       const frontMatter = frontMatterMatch[1];
       const hasTheme = /^theme:/m.test(frontMatter);
 
       if (hasTheme) {
-        // 既存のthemeを置換
         const newFrontMatter = frontMatter.replace(/^theme:.*$/m, `theme: ${selectedTheme}`);
-        return markdown.replace(frontMatterMatch[0], `---\n${newFrontMatter}\n---`);
+        return normalized.replace(frontMatterMatch[0], `---\n${newFrontMatter}\n---`);
       } else {
-        // themeを追加
-        return markdown.replace(frontMatterMatch[0], `---\n${frontMatter}\ntheme: ${selectedTheme}\n---`);
+        return normalized.replace(frontMatterMatch[0], `---\n${frontMatter}\ntheme: ${selectedTheme}\n---`);
       }
     } else {
-      // フロントマターがない場合は追加
-      return `---\ntheme: ${selectedTheme}\n---\n\n${markdown}`;
+      return `---\ntheme: ${selectedTheme}\n---\n\n${normalized}`;
     }
   }, [markdown, selectedTheme]);
 
@@ -142,8 +145,8 @@ export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareS
           <span className="text-xs text-gray-500">デザイン</span>
           <select
             value={selectedTheme}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => setSelectedTheme(e.target.value as ThemeId)}
-            className="text-sm border rounded px-2 py-1"
+            onChange={(e: ChangeEvent<HTMLSelectElement>) => onThemeChange(e.target.value as ThemeId)}
+            className="text-sm text-gray-500 bg-transparent border-none outline-none cursor-pointer hover:text-gray-700 transition-colors appearance-none pr-4 bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%226%22%3E%3Cpath%20d%3D%22M0%200l5%206%205-6z%22%20fill%3D%22%239ca3af%22%2F%3E%3C%2Fsvg%3E')] bg-[length:10px_6px] bg-[right_center] bg-no-repeat"
           >
             {THEMES.map(theme => (
               <option key={theme.id} value={theme.id}>{theme.name}</option>
@@ -178,7 +181,7 @@ export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareS
                   }}
                   className="block w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 active:bg-gray-200 text-left rounded-t-lg whitespace-nowrap"
                 >
-                  PDF形式でダウンロード
+                  PDF形式
                 </button>
                 <button
                   onClick={() => {
@@ -187,7 +190,16 @@ export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareS
                   }}
                   className="block w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 active:bg-gray-200 text-left border-t whitespace-nowrap"
                 >
-                  PPTX形式でダウンロード
+                  PPTX形式（編集不可、再現度100%）
+                </button>
+                <button
+                  onClick={() => {
+                    setIsDropdownOpen(false);
+                    onDownloadEditablePptx(selectedTheme);
+                  }}
+                  className="block w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 active:bg-gray-200 text-left border-t whitespace-nowrap"
+                >
+                  <span>PPTX形式（編集可能、崩れあり）</span>
                 </button>
                 <button
                   onClick={() => {
@@ -197,7 +209,6 @@ export function SlidePreview({ markdown, onDownloadPdf, onDownloadPptx, onShareS
                   className="block w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 active:bg-gray-200 text-left border-t rounded-b-lg flex items-center justify-between whitespace-nowrap"
                 >
                   <span>URLで公開</span>
-                  <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">NEW</span>
                 </button>
               </div>
             )}
