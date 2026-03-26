@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { invokeAgent, invokeAgentMock } from '../hooks/useAgentCore';
+import type { ModelType } from '../hooks/useAgentCore';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -26,6 +27,7 @@ interface ChatProps {
   editPromptTrigger?: number;  // 値が変わるたびに修正用メッセージを表示
   sharePromptTrigger?: number;  // 値が変わるたびにシェア用メッセージを自動送信
   sessionId?: string;  // 会話履歴を保持するためのセッションID
+  theme?: string;
 }
 
 // モック使用フラグ（VITE_USE_MOCK=true で強制的にモック使用）
@@ -64,11 +66,12 @@ const getWebSearchStatus = (query?: string) =>
 const getShareMessage = (url: string) =>
   `ダウンロードありがとうございます！今回の体験をXでシェアしませんか？ 👉 [ツイート](${url})`;
 
-export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromptTrigger, sharePromptTrigger, sessionId }: ChatProps) {
+export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromptTrigger, sharePromptTrigger, sessionId, theme = 'gradient' }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const [modelType] = useState<ModelType>('standard');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
   const tipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -170,7 +173,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       try {
         const invoke = useMock ? invokeAgentMock : invokeAgent;
 
-        await invoke('今回の体験をXでシェアするURLを提案してください（無言でツール使用開始すること）', currentMarkdown, {
+        await invoke('今回の体験をXでシェアするURLを提案してください（無言でツール使用開始すること）', currentMarkdown, theme, {
           onText: (text) => {
             setMessages(prev =>
               prev.map((msg, idx) =>
@@ -235,7 +238,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
               })
             );
           },
-        }, sessionId);
+        }, sessionId, modelType);
       } catch (error) {
         console.error('Error:', error);
       } finally {
@@ -244,7 +247,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
     };
 
     sendShareRequest();
-  }, [sharePromptTrigger]);
+  }, [sharePromptTrigger, currentMarkdown, isLoading, modelType, sessionId, theme]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -263,13 +266,13 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       // デフォルトは本番API、VITE_USE_MOCK=trueでモック使用
       const invoke = useMock ? invokeAgentMock : invokeAgent;
 
-      await invoke(userMessage, currentMarkdown, {
+      await invoke(userMessage, currentMarkdown, theme, {
         onText: (text) => {
           setStatus(''); // テキストが来たらステータスを消す
           // テキストをストリーミング表示
           setMessages(prev => {
             // テキストが来たら進行中のWeb検索ステータスを完了にする
-            let msgs = prev.map(msg =>
+            const msgs = prev.map(msg =>
               msg.isStatus && msg.statusText?.startsWith(MESSAGES.WEB_SEARCH_PREFIX)
                 ? { ...msg, statusText: MESSAGES.WEB_SEARCH_COMPLETED }
                 : msg
@@ -468,7 +471,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             )
           );
         },
-      }, sessionId);
+      }, sessionId, modelType);
 
       // ストリーミング完了
       setMessages(prev =>
