@@ -3,9 +3,10 @@ import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import { Chat } from './components/Chat';
 import { SlidePreview } from './components/SlidePreview';
+import type { ThemeId } from './components/SlidePreview';
 import { ShareConfirmModal } from './components/ShareConfirmModal';
 import { ShareResultModal } from './components/ShareResultModal';
-import { exportPdf, exportPdfMock, exportPptx, exportPptxMock, shareSlide, shareSlideMock } from './hooks/useAgentCore';
+import { exportPdf, exportPdfMock, exportPptx, exportPptxMock, exportEditablePptx, exportEditablePptxMock, shareSlide, shareSlideMock } from './hooks/useAgentCore';
 import type { ShareResult } from './hooks/useAgentCore';
 
 // モック使用フラグ（ローカル開発用：認証スキップ＆モックAPI）
@@ -63,6 +64,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [markdown, setMarkdown] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
+  const [selectedTheme, setSelectedTheme] = useState<ThemeId>('gradient');
   const [editPromptTrigger, setEditPromptTrigger] = useState(0);
   const [sharePromptTrigger] = useState(0);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -91,51 +93,18 @@ function MainApp({ signOut }: { signOut?: () => void }) {
     }, 100);
   };
 
-  const handleDownloadPdf = async (theme: string) => {
+  const handleExport = async (format: 'pdf' | 'pptx' | 'pptx_editable', theme: string) => {
     if (!markdown) return;
+
+    const exportFns = {
+      pdf: useMock ? exportPdfMock : exportPdf,
+      pptx: useMock ? exportPptxMock : exportPptx,
+      pptx_editable: useMock ? exportEditablePptxMock : exportEditablePptx,
+    };
 
     setIsDownloading(true);
     try {
-      const exportFn = useMock ? exportPdfMock : exportPdf;
-      const blob = await exportFn(markdown, theme);
-
-      // 新しいタブでPDFを開く
-      const url = URL.createObjectURL(blob);
-      const newWindow = window.open(url, '_blank');
-
-      // ポップアップブロック検出
-      if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-        // ブロックされた場合はダウンロードリンクで代替
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'slide.pdf';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        alert('ポップアップがブロックされたため、直接ダウンロードしました。');
-      }
-
-      if (useMock) {
-        alert('モックモード: マークダウンファイルをダウンロードしました。');
-      }
-
-      // チャット画面に遷移（初回のみシェアトリガーを発火）
-      setActiveTab('chat');
-    } catch (error) {
-      console.error('Download error:', error);
-      alert(`ダウンロードに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}`);
-    } finally {
-      setIsDownloading(false);
-    }
-  };
-
-  const handleDownloadPptx = async (theme: string) => {
-    if (!markdown) return;
-
-    setIsDownloading(true);
-    try {
-      const exportFn = useMock ? exportPptxMock : exportPptx;
-      const blob = await exportFn(markdown, theme);
+      const blob = await exportFns[format](markdown, theme);
 
       const url = URL.createObjectURL(blob);
       const newWindow = window.open(url, '_blank');
@@ -143,7 +112,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
       if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'slide.pptx';
+        a.download = `slide.${format === 'pptx_editable' ? 'pptx' : format}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -157,7 +126,7 @@ function MainApp({ signOut }: { signOut?: () => void }) {
       setActiveTab('chat');
     } catch (error) {
       console.error('Download error:', error);
-      alert(`PPTXダウンロードに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}`);
+      alert(`${format.toUpperCase()}ダウンロードに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}`);
     } finally {
       setIsDownloading(false);
     }
@@ -247,16 +216,19 @@ function MainApp({ signOut }: { signOut?: () => void }) {
             editPromptTrigger={editPromptTrigger}
             sharePromptTrigger={sharePromptTrigger}
             sessionId={sessionId}
+            theme={selectedTheme}
           />
         </div>
         <div className={`h-full ${activeTab === 'preview' ? '' : 'hidden'}`}>
           <SlidePreview
             markdown={markdown}
-            onDownloadPdf={handleDownloadPdf}
-            onDownloadPptx={handleDownloadPptx}
+            selectedTheme={selectedTheme}
+            onThemeChange={setSelectedTheme}
+            onDownloadPdf={(theme) => handleExport('pdf', theme)}
+            onDownloadPptx={(theme) => handleExport('pptx', theme)}
+            onDownloadEditablePptx={(theme) => handleExport('pptx_editable', theme)}
             onShareSlide={handleShareRequest}
             isDownloading={isDownloading}
-            isSharing={isSharing}
             onRequestEdit={handleRequestEdit}
           />
         </div>
