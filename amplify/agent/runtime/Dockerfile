@@ -3,12 +3,13 @@ FROM --platform=linux/arm64 public.ecr.aws/docker/library/python:3.13-slim-bookw
 
 WORKDIR /app
 
-# Node.js、Chromium、日本語フォントをインストール
+# Node.js、Chromium、日本語フォント、LibreOffice Impressをインストール
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     chromium \
     fonts-noto-cjk \
+    libreoffice-impress \
     && rm -rf /var/lib/apt/lists/* \
     && fc-cache -fv
 
@@ -24,8 +25,10 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # エージェントコードと全テーマをコピー
-COPY agent.py ./
+COPY agent.py config.py ./
 COPY *.css ./
+COPY tools/ ./tools/
+COPY exports/ ./exports/
 
 EXPOSE 8080
 
