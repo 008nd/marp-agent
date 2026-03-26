@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { invokeAgent, invokeAgentMock } from '../hooks/useAgentCore';
-import type { ModelType } from '../hooks/useAgentCore';
+import type { AgentCoreCallbacks, ModelType } from '../hooks/useAgentCore';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -173,8 +173,8 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       try {
         const invoke = useMock ? invokeAgentMock : invokeAgent;
 
-        await invoke('今回の体験をXでシェアするURLを提案してください（無言でツール使用開始すること）', currentMarkdown, theme, {
-          onText: (text) => {
+        const callbacks: AgentCoreCallbacks = {
+          onText: (text: string) => {
             setMessages(prev =>
               prev.map((msg, idx) =>
                 idx === prev.length - 1 && msg.role === 'assistant' && !msg.isStatus
@@ -184,7 +184,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             );
           },
           onStatus: () => {},
-          onToolUse: (toolName) => {
+          onToolUse: (toolName: string) => {
             // ストリーミングカーソルを消す
             setMessages(prev =>
               prev.map(msg =>
@@ -207,7 +207,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             // シェアリクエスト時はスライド生成ステータスは無視
           },
           onMarkdown: () => {},
-          onTweetUrl: (url) => {
+          onTweetUrl: (url: string) => {
             // ツイートURLステータスを完了に更新し、リンクメッセージを追加
             setMessages(prev => {
               const updated = prev.map(msg =>
@@ -221,7 +221,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
               ];
             });
           },
-          onError: (error) => {
+          onError: (error: Error) => {
             console.error('Share error:', error);
           },
           onComplete: () => {
@@ -238,7 +238,16 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
               })
             );
           },
-        }, sessionId, modelType);
+        };
+
+        await invoke(
+          '今回の体験をXでシェアするURLを提案してください（無言でツール使用開始すること）',
+          currentMarkdown,
+          theme,
+          callbacks,
+          sessionId,
+          modelType,
+        );
       } catch (error) {
         console.error('Error:', error);
       } finally {
@@ -266,8 +275,8 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
       // デフォルトは本番API、VITE_USE_MOCK=trueでモック使用
       const invoke = useMock ? invokeAgentMock : invokeAgent;
 
-      await invoke(userMessage, currentMarkdown, theme, {
-        onText: (text) => {
+      const callbacks: AgentCoreCallbacks = {
+        onText: (text: string) => {
           setStatus(''); // テキストが来たらステータスを消す
           // テキストをストリーミング表示
           setMessages(prev => {
@@ -302,10 +311,10 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             return [...msgs, { role: 'assistant', content: text, isStreaming: true }];
           });
         },
-        onStatus: (newStatus) => {
+        onStatus: (newStatus: string) => {
           setStatus(newStatus);
         },
-        onToolUse: (toolName, query) => {
+        onToolUse: (toolName: string, query?: string) => {
           // ツール使用開始時にストリーミングカーソルを消す
           setMessages(prev =>
             prev.map(msg =>
@@ -395,7 +404,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             });
           }
         },
-        onMarkdown: (markdown) => {
+        onMarkdown: (markdown: string) => {
           onMarkdownGenerated(markdown);
           // 豆知識ローテーションタイマーをクリア
           if (tipTimeoutRef.current) {
@@ -415,7 +424,7 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             )
           );
         },
-        onError: (error) => {
+        onError: (error: Error) => {
           console.error('Agent error:', error);
           // モデルが未リリースの場合は専用メッセージを表示
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -471,7 +480,9 @@ export function Chat({ onMarkdownGenerated, currentMarkdown, inputRef, editPromp
             )
           );
         },
-      }, sessionId, modelType);
+      };
+
+      await invoke(userMessage, currentMarkdown, theme, callbacks, sessionId, modelType);
 
       // ストリーミング完了
       setMessages(prev =>
