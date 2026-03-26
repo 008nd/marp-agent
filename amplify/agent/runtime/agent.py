@@ -1,56 +1,56 @@
-import subprocess
-import tempfile
+"""OpenAI-based AgentCore runtime entrypoint."""
+
+import asyncio
 import base64
-import os
 import json
-import uuid
+import os
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
 import traceback
+import uuid
+from datetime import datetime, timedelta
+
 import boto3
 import httpx
-
 from bedrock_agentcore import BedrockAgentCoreApp
 from openai import OpenAI
-from strands import Agent
-from strands.models import BedrockModel
-from tavily import TavilyClient
 
+from config import get_system_prompt
+from exports import (
+    generate_editable_pptx,
+    generate_pdf,
+    generate_pptx,
+    generate_standalone_html,
+    generate_thumbnail,
+)
+from tools import (
+    build_output_slide_tool_description,
+    generate_tweet_url,
+    get_generated_markdown,
+    get_generated_tweet_url,
+    get_last_search_result,
+    output_slide,
+    reset_generated_markdown,
+    reset_generated_tweet_url,
+    reset_last_search_result,
+    web_search,
+)
 
-def _get_model_config(model_type: str = "claude") -> dict:
-    """モデルタイプに応じた設定を返す"""
-    if model_type == "kimi":
-        # Kimi K2 Thinking（Moonshot AI）
-        # - クロスリージョン推論なし
-        # - cache_prompt/cache_tools非対応
-        return {
-            "model_id": "moonshot.kimi-k2-thinking",
-            "cache_prompt": None,
-            "cache_tools": None,
-        }
-    elif model_type == "claude5":
-        # Claude Sonnet 5（2026年リリース予定）
-        # リリース前はエラーになるが、フロントエンドでユーザーに通知
-        return {
-            "model_id": "us.anthropic.claude-sonnet-5-20260203-v1:0",
-            "cache_prompt": "default",
-            "cache_tools": "default",
-        }
-    else:
-        # Claude Sonnet 4.5（デフォルト）
-        return {
-            "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            "cache_prompt": "default",
-            "cache_tools": "default",
-        }
+app = BedrockAgentCoreApp()
 
-
-# Tavilyクライアント初期化（複数キーでフォールバック対応）
 OPENAI_DEFAULT_MODEL = "gpt-5.2"
 OPENAI_MODEL_MAP = {
     "standard": OPENAI_DEFAULT_MODEL,
 }
+OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.4"))
+OPENAI_TIMEOUT_SEC = float(os.environ.get("OPENAI_TIMEOUT_SEC", "120"))
+OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
+MAX_TOOL_ITERATIONS = int(os.environ.get("OPENAI_MAX_TOOL_ITERATIONS", "5"))
+MAX_SESSION_MESSAGES = int(os.environ.get("OPENAI_MAX_SESSION_MESSAGES", "40"))
+EXPORT_KEEPALIVE_INTERVAL_SEC = 5.0
+
+_openai_client: OpenAI | None = None
+_session_messages: dict[str, list[dict]] = {}
+_s3_client = None
 
 
 def resolve_model(model_type: str) -> str:
@@ -59,216 +59,104 @@ def resolve_model(model_type: str) -> str:
     return OPENAI_MODEL_MAP.get(model_type, OPENAI_DEFAULT_MODEL)
 
 
-def _get_float_env(name: str, default: float) -> float:
-    value = os.environ.get(name)
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-OPENAI_TEMPERATURE = _get_float_env("OPENAI_TEMPERATURE", 0.4)
-OPENAI_TIMEOUT_SEC = _get_float_env("OPENAI_TIMEOUT_SEC", 120.0)
-OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
-
-_openai_client: OpenAI | None = None
-
-
 def get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
+
         base_url = os.environ.get("OPENAI_BASE_URL") or None
         if base_url and not base_url.startswith(("http://", "https://")):
-            print("[WARN] OPENAI_BASE_URL missing scheme, prefixing https://", flush=True)
             base_url = f"https://{base_url}"
         if not base_url:
             base_url = "https://api.openai.com/v1"
-        print(
-            f"[INFO] OpenAI env: api_key_len={len(api_key)} base_url={base_url}",
-            flush=True,
-        )
-        _openai_client = OpenAI(api_key=api_key, base_url=base_url)
+
         print(f"[INFO] OpenAI client initialized with base_url: {base_url}", flush=True)
+        _openai_client = OpenAI(api_key=api_key, base_url=base_url)
+
     return _openai_client
 
 
-_tavily_clients: list[TavilyClient] = []
-for _key_name in ["TAVILY_API_KEY", "TAVILY_API_KEY2", "TAVILY_API_KEY3"]:
-    _key = os.environ.get(_key_name, "")
-    if _key:
-        _tavily_clients.append(TavilyClient(api_key=_key))
-
-
-def web_search(query: str) -> str:
-    """Web検索を実行して最新情報を取得します。スライド作成に必要な情報を調べる際に使用してください。
-
-    Args:
-        query: 検索クエリ（日本語または英語）
-
-    Returns:
-        検索結果のテキスト
-    """
-    global _last_search_result
-
-    if not _tavily_clients:
-        return "Web検索機能は現在利用できません（APIキー未設定）"
-
-    for client in _tavily_clients:
-        try:
-            results = client.search(
-                query=query,
-                max_results=5,
-                search_depth="advanced",
-            )
-            # レスポンス内にエラーメッセージが含まれていないかチェック
-            results_str = str(results).lower()
-            if "usage limit" in results_str or "exceeds your plan" in results_str:
-                continue  # 次のキーで再試行
-            # 検索結果をテキストに整形
-            formatted_results = []
-            for result in results.get("results", []):
-                title = result.get("title", "")
-                content = result.get("content", "")
-                url = result.get("url", "")
-                formatted_results.append(f"**{title}**\n{content}\nURL: {url}")
-            search_result = "\n\n---\n\n".join(formatted_results) if formatted_results else "検索結果がありませんでした"
-            _last_search_result = search_result  # フォールバック用に保存
-            return search_result
-        except Exception as e:
-            error_str = str(e).lower()
-            if "rate limit" in error_str or "429" in error_str or "quota" in error_str or "usage limit" in error_str:
-                continue  # 次のキーで再試行
-            return f"検索エラー: {str(e)}"
-
-    # 全キー枯渇
-    return "現在、検索API無料枠が枯渇したようです。修正をお待ちください🙏"
-
-
-# スライド出力用のグローバル変数（invokeで参照）
-_generated_markdown: str | None = None
-
-# ツイートURL用のグローバル変数
-_generated_tweet_url: str | None = None
-
-# Web検索結果用のグローバル変数（フォールバック用）
-_last_search_result: str | None = None
-
-OPENAI_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for up-to-date information and return a concise summary.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
+def build_openai_tools(theme: str) -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web for up-to-date information. "
+                    "If you use this, add a final references slide with <!-- _class: tinytext -->."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
                 },
-                "required": ["query"],
-                "additionalProperties": False,
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "output_slide",
-            "description": "Provide the final Marp markdown for the slide deck.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "markdown": {"type": "string", "description": "Marp markdown"},
+        {
+            "type": "function",
+            "function": {
+                "name": "output_slide",
+                "description": build_output_slide_tool_description(theme),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "markdown": {"type": "string", "description": "Full Marp markdown"},
+                    },
+                    "required": ["markdown"],
+                    "additionalProperties": False,
                 },
-                "required": ["markdown"],
-                "additionalProperties": False,
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_tweet_url",
-            "description": "Generate a tweet intent URL from the given text.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tweet_text": {"type": "string", "description": "Tweet content (<= 100 chars)"},
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_tweet_url",
+                "description": "Generate a tweet intent URL from the given tweet text.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tweet_text": {"type": "string", "description": "Tweet content (<=100 chars)"},
+                    },
+                    "required": ["tweet_text"],
+                    "additionalProperties": False,
                 },
-                "required": ["tweet_text"],
-                "additionalProperties": False,
             },
         },
-    },
-]
-
-MAX_TOOL_ITERATIONS = int(os.environ.get("OPENAI_MAX_TOOL_ITERATIONS", "5"))
-MAX_SESSION_MESSAGES = int(os.environ.get("OPENAI_MAX_SESSION_MESSAGES", "40"))
-
-_session_messages: dict[str, list[dict]] = {}
+    ]
 
 
-def generate_tweet_url(tweet_text: str) -> str:
-    """ツイート投稿用のURLを生成します。ユーザーがXでシェアしたい場合に使用してください。
-
-    Args:
-        tweet_text: ツイート本文（100文字以内、ハッシュタグ含む）
-
-    Returns:
-        生成完了メッセージ
-    """
-    import urllib.parse
-
-    global _generated_tweet_url
-    # 日本語をURLエンコード
-    encoded_text = urllib.parse.quote(tweet_text, safe='')
-    # Twitter Web Intent（compose/postではtextパラメータが無視される）
-    _generated_tweet_url = f"https://twitter.com/intent/tweet?text={encoded_text}"
-    return "ツイートURLを生成しました。"
-
-
-def output_slide(markdown: str) -> str:
-    """生成したスライドのマークダウンを出力します。スライドを作成・編集したら必ずこのツールを使って出力してください。
-
-    Args:
-        markdown: Marp形式のマークダウン全文（フロントマターを含む）
-
-    Returns:
-        出力完了メッセージ
-    """
-    global _generated_markdown
-    _generated_markdown = markdown
-    return "スライドを出力しました。"
-
-def _get_session_key(session_id: str | None, model_type: str) -> str | None:
+def _get_session_key(session_id: str | None, model_type: str, theme: str) -> str | None:
     if not session_id:
         return None
-    return f"{session_id}:{model_type}"
+    return f"{session_id}:{model_type}:{theme}"
 
 
 def _trim_session_messages(messages: list[dict]) -> list[dict]:
     if len(messages) <= MAX_SESSION_MESSAGES:
         return messages
     if messages and messages[0].get("role") == "system":
-        return [messages[0]] + messages[-(MAX_SESSION_MESSAGES - 1):]
+        return [messages[0]] + messages[-(MAX_SESSION_MESSAGES - 1) :]
     return messages[-MAX_SESSION_MESSAGES:]
 
 
-def _get_session_messages(session_id: str | None, model_type: str) -> list[dict]:
-    session_key = _get_session_key(session_id, model_type)
+def _get_session_messages(session_id: str | None, model_type: str, theme: str) -> list[dict]:
+    session_key = _get_session_key(session_id, model_type, theme)
+    system_prompt = get_system_prompt(theme)
     if not session_key:
-        return [{"role": "system", "content": SYSTEM_PROMPT}]
+        return [{"role": "system", "content": system_prompt}]
     if session_key not in _session_messages:
-        _session_messages[session_key] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        _session_messages[session_key] = [{"role": "system", "content": system_prompt}]
     return _session_messages[session_key]
 
 
-def _store_session_messages(session_id: str | None, model_type: str, messages: list[dict]) -> None:
-    session_key = _get_session_key(session_id, model_type)
+def _store_session_messages(session_id: str | None, model_type: str, theme: str, messages: list[dict]) -> None:
+    session_key = _get_session_key(session_id, model_type, theme)
     if not session_key:
         return
     _session_messages[session_key] = _trim_session_messages(messages)
@@ -283,35 +171,37 @@ def _safe_json_loads(value: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
+
 def _is_web_search_error(result: str) -> bool:
     if not result:
         return False
     lower = result.lower()
-    if result.startswith("web_search:"):
-        return True
-    if "検索エラー" in result or "apiキー未設定" in result or "Web検索機能は現在利用できません" in result:
-        return True
-    if "無料枠が枯渇" in result:
-        return True
-    if "rate limit" in lower or "quota" in lower or "usage limit" in lower or "exceeds your plan" in lower:
-        return True
-    return False
+    return (
+        result.startswith("web_search:")
+        or "検索エラー" in result
+        or "apiキー未設定" in result
+        or "Web検索機能は現在利用できません" in result
+        or "無料枠が枯渇" in result
+        or "rate limit" in lower
+        or "quota" in lower
+        or "usage limit" in lower
+        or "exceeds your plan" in lower
+    )
+
 
 def _is_retryable_openai_error(err: Exception) -> bool:
-    if isinstance(err, (
-        httpx.RemoteProtocolError,
-        httpx.ReadTimeout,
-        httpx.ConnectTimeout,
-        httpx.ConnectError,
-        httpx.ReadError,
-        httpx.WriteError,
-        httpx.PoolTimeout,
-    )):
-        return True
-    message = str(err).lower()
-    if "incomplete chunked read" in message or "peer closed connection" in message:
-        return True
-    return False
+    return isinstance(
+        err,
+        (
+            httpx.RemoteProtocolError,
+            httpx.ReadTimeout,
+            httpx.ConnectTimeout,
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.PoolTimeout,
+        ),
+    ) or "incomplete chunked read" in str(err).lower() or "peer closed connection" in str(err).lower()
 
 
 def _run_tool(tool_name: str, tool_args: dict) -> str:
@@ -333,400 +223,72 @@ def _run_tool(tool_name: str, tool_args: dict) -> str:
     return f"Unknown tool: {tool_name}"
 
 
-SYSTEM_PROMPT = """あなたは「パワポ作るマン」、プロフェッショナルなスライド作成AIアシスタントです。
-
-## 役割
-ユーザーの指示に基づいて、Marp形式のマークダウンでスライドを作成・編集します。
-デザインや構成についてのアドバイスも積極的に行います。
-
-## アプリ使用の流れ
-ユーザーはフロントエンドから、作ってほしいスライドのテーマや、題材のURLなどをリクエストします。
-あなたの追加質問や、一度あなたが生成したスライドに対して、内容調整や軌道修正などの追加指示をリクエストして、壁打ちしながらスライドの完成度を高めていきます。
-
-## スライド作成ルール
-- フロントマターには以下を含める：
-  ---
-  marp: true
-  theme: gradient
-  size: 16:9
-  paginate: true
-  ---
-- スライド区切りは `---` を使用
-- 1枚目はタイトルスライド（タイトル + サブタイトル）
-- 箇条書きは1スライドあたり3〜5項目に抑える
-- **絵文字は絶対に使用禁止**（MARPの仕様で絵文字の後に自動改行が入り、レイアウトが崩れるため）
-- **各スライドの本文はタイトルを除いて8行以内に収める**（はみ出し防止）
-
-## スライド構成テクニック（必ず従うこと！）
-単調な箇条書きの連続を避け、以下のテクニックを織り交ぜてプロフェッショナルなスライドを作成してください。
-
-### セクション区切りスライド【必須】
-3〜4枚ごとに、背景色を変えた中タイトルスライドを挟んでセクションを区切る：
-```
----
-<!-- _backgroundColor: #303030 -->
-<!-- _color: white -->
-## セクション名
-```
-
-### 多様なコンテンツ形式
-箇条書きだけでなく、以下を積極的に使い分ける：
-- **表（テーブル）**: 比較・一覧に最適
-- **引用ブロック**: 重要なポイントや定義の強調に `> テキスト`
-- **太字・斜体**: `**重要**` や `*補足*`（==ハイライト==記法は日本語と相性が悪いので使用禁止）
-
-### 参考文献・出典スライド
-Web検索した場合は最後に出典スライドを追加し、文字を小さくする：
-```
----
-<!-- _class: tinytext -->
-## 参考文献
-- 出典1: タイトル（URL）
-- 出典2: タイトル（URL）
-```
-
-### タイトルスライドの例
-```
----
-<!-- _paginate: skip -->
-# プレゼンタイトル
-### サブタイトル — 発表者名
-```
-
-## Web検索
-最新の情報が必要な場合や、リクエストに不明点がある場合は、web_searchツールを使って調べてからスライドを作成してください。
-ユーザーが「〇〇について調べて」「最新の〇〇」などと言った場合は積極的に検索を活用します。
-一度の検索で十分な情報が得られなければ、必要に応じて試行錯誤してください。
-
-## 検索エラー時の対応
-web_searchツールがエラーを返した場合（「検索エラー」「APIキー未設定」「rate limit」「quota」などのメッセージを含む場合）：
-1. エラー原因をユーザーに伝えてください（例：利用殺到のため、検索API無料枠が枯渇したようです。作成者に教えてあげてください🙏）
-2. 一般的な知識や推測でスライド作成せず、ユーザーに「作成者による修正をお待ちください」と案内してください
-3. スライド作成は行わず、エラー報告のみで終了してください
-
-## 重要：スライドの出力方法
-スライドを作成・編集したら、必ず output_slide ツールを使ってマークダウンを出力してください。
-テキストでマークダウンを直接書き出さないでください。output_slide ツールに渡すマークダウンには、フロントマターを含む完全なMarp形式のマークダウンを指定してください。
-
-## スライド出力後の返答について
-output_slide ツールでスライドを出力した直後は、以下の場合を除きテキストメッセージを生成しないでください：
-- Web検索などのツール実行がエラーで失敗した
-- ユーザーが追加で質問や修正指示をしている
-「スライドが完成しました」「以下の構成で～」などのサマリーメッセージは不要です。
-
-## Xでシェア機能
-ユーザーが「シェアしたい」「URLで共有」などと言った場合は、generate_tweet_url ツールを使ってURLを生成してください。
-
-## その他
-- 現在は2026年です。
-- ユーザーから「PDFをダウンロードできない」旨の質問があったら、ブラウザでポップアップがブロックされていないか確認してください。
-"""
-
-app = BedrockAgentCoreApp()
-
-# セッションごとのAgentインスタンスを管理（会話履歴保持用）
-_agent_sessions: dict[str, Agent] = {}
-
-
-def _create_bedrock_model(model_type: str = "claude") -> BedrockModel:
-    """モデル設定に基づいてBedrockModelを作成"""
-    config = _get_model_config(model_type)
-    # cache_prompt/cache_toolsがNoneの場合は引数に含めない（Kimi K2対応）
-    if config["cache_prompt"] is None:
-        return BedrockModel(model_id=config["model_id"])
-    else:
-        return BedrockModel(
-            model_id=config["model_id"],
-            cache_prompt=config["cache_prompt"],
-            cache_tools=config["cache_tools"],
-        )
-
-
-def get_or_create_agent(session_id: str | None, model_type: str = "claude") -> Agent:
-    """セッションIDとモデルタイプに対応するAgentを取得または作成"""
-    # セッションキーにモデルタイプを含める（モデル切り替え時に新しいAgentを作成）
-    cache_key = f"{session_id}:{model_type}" if session_id else None
-
-    # セッションIDがない場合は新規Agentを作成（履歴なし）
-    if not cache_key:
-        return Agent(
-            model=_create_bedrock_model(model_type),
-            system_prompt=SYSTEM_PROMPT,
-            tools=[web_search, output_slide, generate_tweet_url],
-        )
-
-    # 既存のセッションがあればそのAgentを返す
-    if cache_key in _agent_sessions:
-        return _agent_sessions[cache_key]
-
-    # 新規セッションの場合はAgentを作成して保存
-    agent = Agent(
-        model=_create_bedrock_model(model_type),
-        system_prompt=SYSTEM_PROMPT,
-        tools=[web_search, output_slide, generate_tweet_url],
-    )
-    _agent_sessions[cache_key] = agent
-    return agent
-
-
-# Kimi K2のツール名破損検出用
-VALID_TOOL_NAMES = {"web_search", "output_slide", "generate_tweet_url"}
-MAX_RETRY_COUNT = 5  # ツール名破損時の最大リトライ回数
-
-
-def is_tool_name_corrupted(tool_name: str) -> bool:
-    """ツール名が破損しているかチェック（Kimi K2対策）"""
-    if not tool_name:
-        return False
-    # 有効なツール名でなければ破損とみなす
-    if tool_name not in VALID_TOOL_NAMES:
-        return True
-    # 内部トークンが混入していたら破損
-    if "<|" in tool_name or "tooluse_" in tool_name:
-        return True
-    return False
-
-
 def extract_markdown(text: str) -> str | None:
-    """レスポンスからマークダウンを抽出"""
     import re
-    pattern = r"```markdown\s*([\s\S]*?)\s*```"
-    match = re.search(pattern, text)
+
+    match = re.search(r"```markdown\s*([\s\S]*?)\s*```", text)
     if match:
         return match.group(1).strip()
     return None
 
 
 def extract_marp_markdown_from_text(text: str) -> str | None:
-    """テキストからMarpマークダウンを抽出（フォールバック用）
-
-    Kimi K2がoutput_slideツールを呼ばずにテキストとしてマークダウンを出力した場合に使用。
-    以下の2パターンに対応：
-    1. 直接的なマークダウン: ---\nmarp: true\n...
-    2. JSON引数内のマークダウン: {"markdown": "---\\nmarp: true\\n..."}
-    """
     import re
-    import json
 
     if not text:
         return None
-
-    # "marp: true" または "marp:" がない場合はスキップ（エスケープ版も考慮）
     if "marp:" not in text and 'marp\\":' not in text:
         return None
 
-    # ケース1: JSON引数内のマークダウンを抽出（Kimi K2がreasoningText内にツール呼び出しを埋め込んだ場合）
-    # パターン: <|tool_call_argument_begin|> {"markdown": "..."} <|tool_call_end|>
     json_arg_pattern = r'<\|tool_call_argument_begin\|>\s*(\{[\s\S]*?\})\s*<\|tool_call_end\|>'
     json_match = re.search(json_arg_pattern, text)
     if json_match:
         try:
-            json_str = json_match.group(1)
-            # エスケープされた改行を処理
-            data = json.loads(json_str)
-            if isinstance(data, dict) and "markdown" in data:
-                markdown = data["markdown"]
-                if markdown and "marp: true" in markdown:
-                    print(f"[INFO] Extracted markdown from JSON tool argument in reasoningText")
-                    return markdown
-        except json.JSONDecodeError as e:
-            print(f"[WARN] Failed to parse JSON from tool argument: {e}")
+            data = json.loads(json_match.group(1))
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict):
+            markdown = data.get("markdown")
+            if isinstance(markdown, str) and "marp: true" in markdown:
+                return markdown
 
-    # ケース2: 直接的なマークダウンを抽出（既存の処理）
     text_lower = text.lower()
-    if "marp: true" in text_lower:
-        # パターンA: ---で始まるフロントマター形式（改行は\nまたは\r\n）
-        pattern_with_frontmatter = r'(---\s*[\r\n]+marp:\s*true[\s\S]*?)(?:<\|tool_call|$)'
-        match = re.search(pattern_with_frontmatter, text, re.IGNORECASE)
+    if "marp: true" not in text_lower:
+        return None
 
-        if not match:
-            # パターンB: ---がない場合、marp: trueから始まる部分を抽出
-            # （Kimi K2がフロントマター記号なしで出力した場合の対応）
-            pattern_without_frontmatter = r'(marp:\s*true[\s\S]*?)(?:<\|tool_call|$)'
-            match = re.search(pattern_without_frontmatter, text, re.IGNORECASE)
-            if match:
-                # フロントマターの開始記号を補完
-                markdown = "---\n" + match.group(1).strip()
-                print(f"[INFO] Extracted markdown without frontmatter delimiter (added ---)")
-            else:
-                # デバッグ: マッチしなかった場合、先頭100文字をログ出力
-                preview = text[:200].replace('\n', '\\n').replace('\r', '\\r')
-                print(f"[WARN] Marp markdown detected but extraction failed. Text preview: {preview}")
-                return None
-        else:
-            markdown = match.group(1).strip()
+    match = re.search(r"(---\s*[\r\n]+marp:\s*true[\s\S]*?)(?:<\|tool_call|$)", text, re.IGNORECASE)
+    markdown = None
+    if match:
+        markdown = match.group(1).strip()
+    else:
+        match = re.search(r"(marp:\s*true[\s\S]*?)(?:<\|tool_call|$)", text, re.IGNORECASE)
+        if match:
+            markdown = "---\n" + match.group(1).strip()
 
-        # 内部トークンが残っていたら除去
-        markdown = re.sub(r'<\|[^>]+\|>', '', markdown)
-        # 末尾の不完全な行を除去
-        lines = markdown.split('\n')
-        # 最後の行が不完全（閉じタグなど）なら除去
-        while lines and (lines[-1].strip().startswith('<|') or not lines[-1].strip()):
-            lines.pop()
-        return '\n'.join(lines) if lines else None
+    if not markdown:
+        return None
 
-    return None
-
-
-def generate_pdf(markdown: str, theme: str = 'gradient') -> bytes:
-    """Marp CLIでPDFを生成"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        md_path = Path(tmpdir) / "slide.md"
-        pdf_path = Path(tmpdir) / "slide.pdf"
-
-        md_path.write_text(markdown, encoding="utf-8")
-
-        cmd = [
-            "marp",
-            str(md_path),
-            "--pdf",
-            "--allow-local-files",
-            "-o", str(pdf_path),
-        ]
-
-        # テーマ設定: カスタムCSS
-        theme_path = Path(__file__).parent / f"{theme}.css"
-        if theme_path.exists():
-            cmd.extend(["--theme", str(theme_path)])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Marp CLI error: {result.stderr}")
-
-        return pdf_path.read_bytes()
-
-
-def generate_pptx(markdown: str, theme: str = 'gradient') -> bytes:
-    """Marp CLIでPPTXを生成"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        md_path = Path(tmpdir) / "slide.md"
-        pptx_path = Path(tmpdir) / "slide.pptx"
-
-        md_path.write_text(markdown, encoding="utf-8")
-
-        cmd = [
-            "marp",
-            str(md_path),
-            "--pptx",
-            "--allow-local-files",
-            "-o", str(pptx_path),
-        ]
-
-        # テーマ設定: カスタムCSS
-        theme_path = Path(__file__).parent / f"{theme}.css"
-        if theme_path.exists():
-            cmd.extend(["--theme", str(theme_path)])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Marp CLI error: {result.stderr}")
-
-        return pptx_path.read_bytes()
-
-
-def generate_standalone_html(markdown: str, theme: str = 'gradient') -> str:
-    """Marp CLIでスタンドアロンHTMLを生成（共有用）"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        md_path = Path(tmpdir) / "slide.md"
-        html_path = Path(tmpdir) / "slide.html"
-
-        md_path.write_text(markdown, encoding="utf-8")
-
-        cmd = [
-            "marp",
-            str(md_path),
-            "--html",
-            "--allow-local-files",
-            "-o", str(html_path),
-        ]
-
-        # テーマ設定: カスタムCSS
-        theme_path = Path(__file__).parent / f"{theme}.css"
-        if theme_path.exists():
-            cmd.extend(["--theme", str(theme_path)])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Marp CLI error: {result.stderr}")
-
-        return html_path.read_text(encoding="utf-8")
-
-
-def generate_thumbnail(markdown: str, theme: str = 'gradient') -> bytes:
-    """Marp CLIで1枚目のスライドをPNG画像として生成（OGP用サムネイル）"""
-    import re as thumb_re
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        md_path = Path(tmpdir) / "slide.md"
-        png_output = Path(tmpdir) / "slide.png"
-
-        md_path.write_text(markdown, encoding="utf-8")
-
-        cmd = [
-            "marp",
-            str(md_path),
-            "--image", "png",
-            "--allow-local-files",
-            "-o", str(png_output),
-        ]
-
-        # テーマ設定: カスタムCSS
-        theme_path = Path(__file__).parent / f"{theme}.css"
-        if theme_path.exists():
-            cmd.extend(["--theme", str(theme_path)])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Marp CLI thumbnail error: {result.stderr}")
-
-        # Marpは複数スライドの場合 slide.001.png, slide.002.png... を生成
-        # 1枚目のサムネイルを取得
-        png_files = sorted(Path(tmpdir).glob("slide*.png"))
-        if not png_files:
-            raise RuntimeError("Thumbnail generation failed: no PNG files created")
-
-        return png_files[0].read_bytes()
+    markdown = re.sub(r"<\|[^>]+\|>", "", markdown)
+    lines = markdown.split("\n")
+    while lines and (lines[-1].strip().startswith("<|") or not lines[-1].strip()):
+        lines.pop()
+    return "\n".join(lines) if lines else None
 
 
 def extract_slide_title(markdown: str) -> str | None:
-    """マークダウンからスライドタイトルを抽出"""
-    import re as title_re
+    import re
 
-    # 最初の # 見出しを探す
-    match = title_re.search(r'^#\s+(.+)$', markdown, title_re.MULTILINE)
+    match = re.search(r"^#\s+(.+)$", markdown, re.MULTILINE)
     if match:
         return match.group(1).strip()
     return None
 
 
 def inject_ogp_tags(html: str, title: str, image_url: str, page_url: str) -> str:
-    """HTMLにOGPメタタグを挿入"""
     import html as html_escape
 
-    # タイトルをHTMLエスケープ
     safe_title = html_escape.escape(title)
-
-    ogp_tags = f'''
+    ogp_tags = f"""
     <meta property="og:title" content="{safe_title}">
     <meta property="og:type" content="website">
     <meta property="og:url" content="{page_url}">
@@ -735,35 +297,26 @@ def inject_ogp_tags(html: str, title: str, image_url: str, page_url: str) -> str
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="{safe_title}">
     <meta name="twitter:image" content="{image_url}">
-    '''
-    # </head>の前にOGPタグを挿入
-    return html.replace('</head>', f'{ogp_tags}</head>')
+    """
+    return html.replace("</head>", f"{ogp_tags}</head>")
 
-
-# S3クライアント（共有スライド用）
-_s3_client = None
 
 def get_s3_client():
-    """S3クライアントを取得（遅延初期化）"""
     global _s3_client
     if _s3_client is None:
-        _s3_client = boto3.client('s3')
+        _s3_client = boto3.client("s3")
     return _s3_client
 
 
-def share_slide(markdown: str, theme: str = 'gradient') -> dict:
-    """スライドをHTML化してS3に保存し、公開URLを返す（OGP対応）"""
-    bucket_name = os.environ.get('SHARED_SLIDES_BUCKET')
-    cloudfront_domain = os.environ.get('CLOUDFRONT_DOMAIN')
-
+def share_slide(markdown: str, theme: str = "gradient") -> dict:
+    bucket_name = os.environ.get("SHARED_SLIDES_BUCKET")
+    cloudfront_domain = os.environ.get("CLOUDFRONT_DOMAIN")
     if not bucket_name or not cloudfront_domain:
         raise RuntimeError("共有機能が設定されていません（環境変数未設定）")
 
-    # スライドID生成（UUID v4）
     slide_id = str(uuid.uuid4())
     s3_client = get_s3_client()
 
-    # サムネイル生成・アップロード
     try:
         thumbnail_bytes = generate_thumbnail(markdown, theme)
         thumbnail_key = f"slides/{slide_id}/thumbnail.png"
@@ -771,102 +324,91 @@ def share_slide(markdown: str, theme: str = 'gradient') -> dict:
             Bucket=bucket_name,
             Key=thumbnail_key,
             Body=thumbnail_bytes,
-            ContentType='image/png',
+            ContentType="image/png",
         )
         thumbnail_url = f"https://{cloudfront_domain}/{thumbnail_key}"
-        print(f"[INFO] Thumbnail uploaded: {thumbnail_url}")
-    except Exception as e:
-        # サムネイル生成に失敗してもHTML共有は続行
-        print(f"[WARN] Thumbnail generation failed: {e}")
+    except Exception as exc:
+        print(f"[WARN] Thumbnail generation failed: {exc}", flush=True)
         thumbnail_url = None
 
-    # 共有URL（OGPタグ挿入前に決定）
     share_url = f"https://{cloudfront_domain}/slides/{slide_id}/index.html"
-
-    # HTML生成
     html_content = generate_standalone_html(markdown, theme)
-
-    # OGPタグ挿入（サムネイルがある場合のみ）
     if thumbnail_url:
         title = extract_slide_title(markdown) or "スライド"
         html_content = inject_ogp_tags(html_content, title, thumbnail_url, share_url)
 
-    # S3にHTMLアップロード
-    s3_key = f"slides/{slide_id}/index.html"
     s3_client.put_object(
         Bucket=bucket_name,
-        Key=s3_key,
-        Body=html_content.encode('utf-8'),
-        ContentType='text/html; charset=utf-8',
+        Key=f"slides/{slide_id}/index.html",
+        Body=html_content.encode("utf-8"),
+        ContentType="text/html; charset=utf-8",
     )
 
-    # 有効期限（7日後）
     expires_at = int((datetime.utcnow() + timedelta(days=7)).timestamp())
+    return {"slideId": slide_id, "url": share_url, "expiresAt": expires_at}
 
-    print(f"[INFO] Slide shared: {share_url} (expires: {expires_at})")
 
-    return {
-        'slideId': slide_id,
-        'url': share_url,
-        'expiresAt': expires_at,
-    }
+async def _wait_with_keepalive(task: asyncio.Future, label: str):
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=EXPORT_KEEPALIVE_INTERVAL_SEC)
+        except asyncio.TimeoutError:
+            yield {"type": "progress", "message": f"{label}処理中..."}
+
+
+async def _handle_export(current_markdown: str, theme: str, label: str, event_type: str, export_fn):
+    loop = asyncio.get_event_loop()
+    task = loop.run_in_executor(None, export_fn, current_markdown, theme)
+    async for event in _wait_with_keepalive(task, label):
+        yield event
+    payload = base64.b64encode(task.result()).decode("utf-8")
+    yield {"type": event_type, "data": payload}
 
 
 @app.entrypoint
 async def invoke(payload, context=None):
-    """エージェント実行（ストリーミング対応）"""
-    global _generated_markdown, _generated_tweet_url, _last_search_result
-    _generated_markdown = None  # リセット
-    _generated_tweet_url = None  # リセット
-    _last_search_result = None  # リセット
+    reset_generated_markdown()
+    reset_generated_tweet_url()
+    reset_last_search_result()
 
     user_message = payload.get("prompt", "")
-    action = payload.get("action", "chat")  # chat or export_pdf
+    action = payload.get("action", "chat")
     current_markdown = payload.get("markdown", "")
     model_type = payload.get("model_type", "standard")
-    # セッションIDはHTTPヘッダー経由でcontextから取得（スティッキーセッション用）
-    session_id = getattr(context, 'session_id', None) if context else None
-
+    session_id = getattr(context, "session_id", None) if context else None
     theme = payload.get("theme", "gradient")
+
     print(
-        f"[INFO] Invoke received: action={action} model_type={model_type} session_id={session_id}",
+        f"[INFO] Invoke received: action={action} model_type={model_type} session_id={session_id} theme={theme}",
         flush=True,
     )
 
-    if action == "export_pdf" and current_markdown:
-        # PDF出力
-        try:
-            pdf_bytes = generate_pdf(current_markdown, theme)
-            pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
-            yield {"type": "pdf", "data": pdf_base64}
-        except Exception as e:
-            yield {"type": "error", "message": str(e)}
+    try:
+        if action == "export_pdf" and current_markdown:
+            async for event in _handle_export(current_markdown, theme, "PDF", "pdf", generate_pdf):
+                yield event
+            return
+        if action == "export_pptx" and current_markdown:
+            async for event in _handle_export(current_markdown, theme, "PPTX", "pptx", generate_pptx):
+                yield event
+            return
+        if action == "export_pptx_editable" and current_markdown:
+            async for event in _handle_export(current_markdown, theme, "編集可能PPTX", "pptx", generate_editable_pptx):
+                yield event
+            return
+        if action == "share_slide" and current_markdown:
+            loop = asyncio.get_event_loop()
+            task = loop.run_in_executor(None, share_slide, current_markdown, theme)
+            async for event in _wait_with_keepalive(task, "共有"):
+                yield event
+            result = task.result()
+            yield {"type": "share_result", "url": result["url"], "expiresAt": result["expiresAt"]}
+            return
+    except Exception as exc:
+        print(f"[ERROR] Export/share failed: {exc}", flush=True)
+        yield {"type": "error", "message": str(exc)}
         return
 
-    if action == "export_pptx" and current_markdown:
-        # PPTX出力
-        try:
-            pptx_bytes = generate_pptx(current_markdown, theme)
-            pptx_base64 = base64.b64encode(pptx_bytes).decode("utf-8")
-            yield {"type": "pptx", "data": pptx_base64}
-        except Exception as e:
-            yield {"type": "error", "message": str(e)}
-        return
-
-    if action == "share_slide" and current_markdown:
-        # スライド共有（S3にアップロードして公開URLを返す）
-        try:
-            result = share_slide(current_markdown, theme)
-            yield {
-                "type": "share_result",
-                "url": result['url'],
-                "expiresAt": result['expiresAt'],
-            }
-        except Exception as e:
-            yield {"type": "error", "message": str(e)}
-        return
-
-    # --- OpenAI chat flow ---
     if current_markdown:
         user_message = (
             "Current slide markdown:\n"
@@ -875,12 +417,15 @@ async def invoke(payload, context=None):
         )
 
     model_name = resolve_model(model_type)
-    messages = _get_session_messages(session_id, model_type)
+    messages = _get_session_messages(session_id, model_type, theme)
     messages.append({"role": "user", "content": user_message})
+    tools = build_openai_tools(theme)
 
     web_search_executed = False
     full_text_response = ""
     tool_iterations = 0
+
+    yield {"type": "progress", "message": "処理中..."}
 
     while tool_iterations < MAX_TOOL_ITERATIONS:
         tool_iterations += 1
@@ -898,7 +443,7 @@ async def invoke(payload, context=None):
                 stream = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
                     model=model_name,
                     messages=messages,
-                    tools=OPENAI_TOOLS,
+                    tools=tools,
                     tool_choice="auto",
                     temperature=OPENAI_TEMPERATURE,
                     stream=True,
@@ -926,17 +471,13 @@ async def invoke(payload, context=None):
                                     entry["arguments"] += call.function.arguments
                             tool_calls[idx] = entry
                             had_stream_output = True
-                print(
-                    f"[INFO] OpenAI stream finished: model={model_name} session_id={session_id} action={action}",
-                    flush=True,
-                )
                 break
-            except Exception as e:
-                retryable = _is_retryable_openai_error(e)
+            except Exception as exc:
+                retryable = _is_retryable_openai_error(exc)
                 if retryable and attempt < OPENAI_MAX_RETRIES and not had_stream_output:
                     wait_sec = min(4.0, 1.0 * (2 ** attempt))
                     print(
-                        f"[WARN] OpenAI stream error (retryable): model={model_name} session_id={session_id} action={action} error={type(e).__name__}: {e}. Retrying in {wait_sec:.1f}s",
+                        f"[WARN] OpenAI stream error (retryable): model={model_name} session_id={session_id} action={action} error={type(exc).__name__}: {exc}. Retrying in {wait_sec:.1f}s",
                         flush=True,
                     )
                     time.sleep(wait_sec)
@@ -946,29 +487,27 @@ async def invoke(payload, context=None):
                     "[ERROR] OpenAI stream failed:"
                     f" model={model_name} session_id={session_id} action={action}"
                     f" base_url={'set' if os.environ.get('OPENAI_BASE_URL') else 'default'}"
-                    f" error={type(e).__name__}: {e}",
+                    f" error={type(exc).__name__}: {exc}",
                     flush=True,
                 )
                 print(traceback.format_exc(), flush=True)
-                yield {"type": "error", "message": str(e)}
+                yield {"type": "error", "message": str(exc)}
                 return
 
         if tool_calls:
-            assistant_message = {
-                "role": "assistant",
-                "content": assistant_text if assistant_text else None,
-                "tool_calls": [],
-            }
+            assistant_message = {"role": "assistant", "content": assistant_text or None, "tool_calls": []}
             for entry in tool_calls.values():
                 call_id = entry["id"] or f"call_{uuid.uuid4().hex}"
-                assistant_message["tool_calls"].append({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": entry["name"],
-                        "arguments": entry["arguments"] or "{}",
-                    },
-                })
+                assistant_message["tool_calls"].append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": entry["name"],
+                            "arguments": entry["arguments"] or "{}",
+                        },
+                    }
+                )
             messages.append(assistant_message)
 
             for tool_call in assistant_message["tool_calls"]:
@@ -983,35 +522,33 @@ async def invoke(payload, context=None):
                         yield {"type": "tool_use", "data": tool_name}
                 else:
                     yield {"type": "tool_use", "data": tool_name}
+
                 try:
                     tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
-                except Exception as e:
+                except Exception as exc:
                     print(
                         "[ERROR] Tool execution failed:"
                         f" tool={tool_name} session_id={session_id} action={action}"
-                        f" error={type(e).__name__}: {e}"
+                        f" error={type(exc).__name__}: {exc}",
+                        flush=True,
                     )
-                    print(traceback.format_exc())
-                    yield {"type": "error", "message": str(e)}
+                    print(traceback.format_exc(), flush=True)
+                    yield {"type": "error", "message": str(exc)}
                     return
-                if tool_name == "web_search" and _is_web_search_error(tool_result):
-                    messages.append({
+
+                messages.append(
+                    {
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
                         "content": tool_result,
-                    })
-                    error_text = tool_result
-                    print(f"[WARN] Web search error detected, returning to user: {error_text}", flush=True)
-                    messages.append({"role": "assistant", "content": error_text})
-                    _store_session_messages(session_id, model_type, messages)
-                    yield {"type": "text", "data": error_text}
+                    }
+                )
+                if tool_name == "web_search" and _is_web_search_error(tool_result):
+                    messages.append({"role": "assistant", "content": tool_result})
+                    _store_session_messages(session_id, model_type, theme, messages)
+                    yield {"type": "text", "data": tool_result}
                     yield {"type": "done"}
                     return
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": tool_result,
-                })
             continue
 
         messages.append({"role": "assistant", "content": assistant_text})
@@ -1020,24 +557,21 @@ async def invoke(payload, context=None):
         yield {"type": "error", "message": "Tool loop exceeded max iterations"}
         return
 
-    fallback_markdown = _generated_markdown or extract_marp_markdown_from_text(full_text_response) or extract_markdown(full_text_response)
-    markdown_to_send = _generated_markdown or fallback_markdown
+    fallback_markdown = get_generated_markdown() or extract_marp_markdown_from_text(full_text_response) or extract_markdown(full_text_response)
+    markdown_to_send = get_generated_markdown() or fallback_markdown
 
-    if web_search_executed and not markdown_to_send and _last_search_result:
-        print("[WARN] Web search executed but no markdown was produced. Forcing output_slide.", flush=True)
+    if web_search_executed and not markdown_to_send and get_last_search_result():
         try:
-            force_messages = messages + [{
-                "role": "system",
-                "content": "You must call output_slide now. Do not call web_search. Output full Marp markdown.",
-            }]
-            print(
-                f"[INFO] OpenAI forced output start: model={model_name} session_id={session_id} action={action}",
-                flush=True,
-            )
+            force_messages = messages + [
+                {
+                    "role": "system",
+                    "content": "You must call output_slide now. Do not call web_search. Output full Marp markdown.",
+                }
+            ]
             force_response = get_openai_client().with_options(timeout=OPENAI_TIMEOUT_SEC).chat.completions.create(
                 model=model_name,
                 messages=force_messages,
-                tools=OPENAI_TOOLS,
+                tools=tools,
                 tool_choice={"type": "function", "function": {"name": "output_slide"}},
                 temperature=OPENAI_TEMPERATURE,
             )
@@ -1046,215 +580,47 @@ async def invoke(payload, context=None):
             if force_message:
                 tool_calls = getattr(force_message, "tool_calls", None) or []
                 if tool_calls:
-                    assistant_message = {
-                        "role": "assistant",
-                        "content": force_message.content if getattr(force_message, "content", None) else None,
-                        "tool_calls": [],
-                    }
                     for call in tool_calls:
-                        call_id = getattr(call, "id", None) or f"call_{uuid.uuid4().hex}"
                         func = getattr(call, "function", None)
-                        assistant_message["tool_calls"].append({
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": getattr(func, "name", "") if func else "",
-                                "arguments": getattr(func, "arguments", "") if func else "",
-                            },
-                        })
-                    messages.append(assistant_message)
-                    for tool_call in assistant_message["tool_calls"]:
-                        tool_name = tool_call["function"]["name"]
-                        args = _safe_json_loads(tool_call["function"]["arguments"])
+                        tool_name = getattr(func, "name", "") if func else ""
+                        args = _safe_json_loads(getattr(func, "arguments", "") if func else "")
                         yield {"type": "tool_use", "data": tool_name}
-                        try:
-                            tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
-                        except Exception as e:
-                            print(
-                                "[ERROR] Tool execution failed (forced):"
-                                f" tool={tool_name} session_id={session_id} action={action}"
-                                f" error={type(e).__name__}: {e}"
-                            )
-                            print(traceback.format_exc())
-                        else:
-                            messages.append({
+                        tool_result = _run_tool(tool_name, args if isinstance(args, dict) else {})
+                        messages.append(
+                            {
                                 "role": "tool",
-                                "tool_call_id": tool_call["id"],
+                                "tool_call_id": getattr(call, "id", f"call_{uuid.uuid4().hex}"),
                                 "content": tool_result,
-                            })
+                            }
+                        )
                 elif getattr(force_message, "content", None):
                     extracted = extract_marp_markdown_from_text(force_message.content) or extract_markdown(force_message.content)
                     if extracted:
-                        _generated_markdown = extracted
-        except Exception as e:
-            print(
-                "[ERROR] OpenAI forced output failed:"
-                f" model={model_name} session_id={session_id} action={action}"
-                f" error={type(e).__name__}: {e}",
-                flush=True,
-            )
+                        reset_generated_markdown()
+                        output_slide(extracted)
+        except Exception as exc:
+            print(f"[ERROR] OpenAI forced output failed: {exc}", flush=True)
             print(traceback.format_exc(), flush=True)
 
-        markdown_to_send = _generated_markdown or fallback_markdown
+        markdown_to_send = get_generated_markdown() or fallback_markdown
 
     if markdown_to_send:
-        if fallback_markdown and not _generated_markdown:
-            print("[INFO] Using fallback markdown (output_slide was not called)")
         yield {"type": "markdown", "data": markdown_to_send}
-    elif web_search_executed and _last_search_result:
-        truncated_result = _last_search_result[:500]
-        if len(_last_search_result) > 500:
+    elif web_search_executed and get_last_search_result():
+        last_search_result = get_last_search_result()
+        truncated_result = last_search_result[:500]
+        if len(last_search_result) > 500:
             truncated_result += "..."
-        fallback_message = f"Web検索結果:\n\n{truncated_result}\n\n---\nスライド生成に失敗しました。もう一度お試しください。"
-        yield {"type": "text", "data": fallback_message}
+        yield {
+            "type": "text",
+            "data": f"Web検索結果:\n\n{truncated_result}\n\n---\nスライド生成に失敗しました。もう一度お試しください。",
+        }
 
-    _store_session_messages(session_id, model_type, messages)
+    _store_session_messages(session_id, model_type, theme, messages)
 
-    if _generated_tweet_url:
-        yield {"type": "tweet_url", "data": _generated_tweet_url}
-
-    yield {"type": "done"}
-    return
-
-    # 現在のスライドがある場合はユーザーメッセージに付加
-    if current_markdown:
-        user_message = f"現在のスライド:\n```markdown\n{current_markdown}\n```\n\nユーザーの指示: {user_message}"
-
-    # セッションIDとモデルタイプに対応するAgentを取得（会話履歴が保持される）
-    agent = get_or_create_agent(session_id, model_type)
-
-    # Kimi K2のツール名破損時のリトライループ
-    retry_count = 0
-    fallback_markdown: str | None = None  # フォールバック用マークダウン
-
-    while retry_count <= MAX_RETRY_COUNT:
-        _generated_markdown = None  # リトライ時にリセット
-        fallback_markdown = None  # リトライ時にリセット
-        tool_name_corrupted = False  # 破損検出フラグ
-        has_any_output = False  # テキスト出力があったかのフラグ
-        web_search_executed = False  # Web検索が実行されたかのフラグ（Kimi K2対策）
-
-        # Kimi K2の場合、dataイベントを蓄積してマークダウン検出に使用
-        kimi_text_buffer = "" if model_type == "kimi" else None
-        kimi_skip_text = False  # マークダウン検出後はテキスト送信をスキップ
-
-        stream = agent.stream_async(user_message)
-
-        async for event in stream:
-            # Kimi K2 Thinking の思考プロセスは無視（最終回答のみ表示）
-            if event.get("reasoning"):
-                continue
-
-            if "data" in event:
-                chunk = event["data"]
-                if model_type == "kimi":
-                    # Kimi K2: テキストを蓄積してマークダウン開始を検出
-                    kimi_text_buffer += chunk
-                    if not kimi_skip_text and "marp: true" in kimi_text_buffer.lower():
-                        kimi_skip_text = True
-                        print(f"[INFO] Kimi K2: Marp markdown detected in text stream, skipping text output")
-                    if not kimi_skip_text:
-                        has_any_output = True
-                        yield {"type": "text", "data": chunk}
-                else:
-                    # Claude: そのままテキスト送信
-                    has_any_output = True
-                    yield {"type": "text", "data": chunk}
-            elif "current_tool_use" in event:
-                # ツール使用中イベントを送信
-                tool_info = event["current_tool_use"]
-                tool_name = tool_info.get("name", "unknown")
-                tool_input = tool_info.get("input", {})
-
-                # Kimi K2のツール名破損をチェック
-                if is_tool_name_corrupted(tool_name):
-                    tool_name_corrupted = True
-                    # リトライ対象であることをログ出力（デバッグ用）
-                    print(f"[WARN] Corrupted tool name detected: {tool_name[:50]}... (retry {retry_count + 1}/{MAX_RETRY_COUNT})")
-                    continue  # 破損したツール呼び出しは無視
-
-                # 文字列の場合はJSONパースを試みる（ストリーミング中は不完全なJSONが来る）
-                if isinstance(tool_input, str):
-                    try:
-                        tool_input = json.loads(tool_input)
-                    except json.JSONDecodeError:
-                        pass  # パースできない場合はそのまま（不完全なJSON）
-
-                # web_searchの場合はクエリが取得できた時のみ送信（ストリーミング中は複数回イベントが来るため）
-                if tool_name == "web_search":
-                    web_search_executed = True  # Web検索実行フラグを立てる
-                    if isinstance(tool_input, dict) and "query" in tool_input:
-                        yield {"type": "tool_use", "data": tool_name, "query": tool_input["query"]}
-                    # クエリがない場合はイベントを送信しない（完全なJSONを待つ）
-                else:
-                    yield {"type": "tool_use", "data": tool_name}
-            elif "result" in event:
-                # 最終結果からテキストを抽出（ツール使用後の回答など）
-                result = event["result"]
-                if hasattr(result, 'message') and result.message:
-                    for content in getattr(result.message, 'content', []):
-                        # Kimi K2 Thinking の reasoningContent からマークダウンを抽出（フォールバック）
-                        if hasattr(content, 'reasoningContent'):
-                            reasoning = content.reasoningContent
-                            if hasattr(reasoning, 'reasoningText'):
-                                reasoning_text = reasoning.reasoningText
-                                if hasattr(reasoning_text, 'text') and reasoning_text.text:
-                                    text = reasoning_text.text
-                                    # ツール呼び出しがテキストとして埋め込まれている場合を検出（リトライ対象）
-                                    if "<|tool_call" in text or "functions.web_search" in text or "functions.output_slide" in text:
-                                        tool_name_corrupted = True
-                                        print(f"[WARN] Tool call found in reasoning text (retry {retry_count + 1}/{MAX_RETRY_COUNT})")
-                                    # マークダウン抽出（フォールバック用）
-                                    extracted = extract_marp_markdown_from_text(text)
-                                    if extracted and not fallback_markdown:
-                                        fallback_markdown = extracted
-                                        print(f"[INFO] Fallback markdown extracted from reasoningContent")
-                            continue
-                        if hasattr(content, 'text') and content.text:
-                            has_any_output = True
-                            yield {"type": "text", "data": content.text}
-
-        # Kimi K2: テキストストリームからマークダウンを抽出（フォールバック）
-        if model_type == "kimi" and kimi_text_buffer and not fallback_markdown:
-            extracted = extract_marp_markdown_from_text(kimi_text_buffer)
-            if extracted:
-                fallback_markdown = extracted
-                print(f"[INFO] Kimi K2: Fallback markdown extracted from text stream")
-
-        # リトライ判定: ツール名破損が検出され、markdownが生成されていない場合
-        if tool_name_corrupted and not _generated_markdown and not fallback_markdown and model_type == "kimi":
-            retry_count += 1
-            if retry_count <= MAX_RETRY_COUNT:
-                yield {"type": "status", "data": f"リトライ中... ({retry_count}/{MAX_RETRY_COUNT})"}
-                # Agentの会話履歴をクリアしてリトライ（破損した履歴を引き継がない）
-                agent.messages.clear()
-                continue
-            else:
-                yield {"type": "error", "message": "スライド生成に失敗しました。Claudeモデルをお試しください。"}
-        break  # 正常完了またはリトライ上限
-
-    # output_slideツールで生成されたマークダウンを送信
-    # output_slideが呼ばれなかった場合はフォールバックを使用（Kimi K2対策）
-    markdown_to_send = _generated_markdown or fallback_markdown
-    if markdown_to_send:
-        if fallback_markdown and not _generated_markdown:
-            print(f"[INFO] Using fallback markdown (output_slide was not called)")
-        yield {"type": "markdown", "data": markdown_to_send}
-
-    # Web検索後にスライドが生成されなかった場合のフォールバック（Kimi K2対策 #42）
-    # 条件: Web検索が実行されたが、マークダウンが生成されず、検索結果がある場合
-    if web_search_executed and not markdown_to_send and _last_search_result:
-        # 検索結果を500文字に切り詰めて表示
-        truncated_result = _last_search_result[:500]
-        if len(_last_search_result) > 500:
-            truncated_result += "..."
-        fallback_message = f"Web検索結果:\n\n{truncated_result}\n\n---\nスライドを作成しますか？"
-        print(f"[INFO] Web search executed but no slide generated, returning search result as fallback (model_type={model_type})")
-        yield {"type": "text", "data": fallback_message}
-
-    # generate_tweet_urlツールで生成されたツイートURLを送信
-    if _generated_tweet_url:
-        yield {"type": "tweet_url", "data": _generated_tweet_url}
+    tweet_url = get_generated_tweet_url()
+    if tweet_url:
+        yield {"type": "tweet_url", "data": tweet_url}
 
     yield {"type": "done"}
 
